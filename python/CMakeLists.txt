@@ -1,3 +1,4 @@
+cmake_minimum_required(VERSION 4.1)
 set(PYBIND11_FIND_STRATEGY "CONFIG")
 
 if(NOT TARGET pybind11::module)

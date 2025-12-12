@@ -11,11 +11,11 @@
 #include <string>
 #include <vector>
 
-#include "backendManager.hpp"
-#include "circuit.hpp"
-#include "config.hpp"
-#include "nwq_util.hpp"
-#include "state.hpp"
+#include "../../include/backendManager.hpp"
+#include "../../include/circuit.hpp"
+#include "../../include/config.hpp"
+#include "../../include/nwq_util.hpp"
+#include "../../include/state.hpp"
 
 namespace py = pybind11;
 

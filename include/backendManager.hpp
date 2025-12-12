@@ -3,32 +3,30 @@
 #include "state.hpp"
 #include "nwq_util.hpp"
 
-#include "svsim/sv_cpu.hpp"
-#include "dmsim/dm_cpu.hpp"
 #include "stabsim/stab_cpu.hpp"
 
 #ifdef OMP_ENABLED
-#include "svsim/sv_omp.hpp"
+// #include "svsim/sv_omp.hpp"
 #endif
 
 #ifdef MPI_ENABLED
-#include "svsim/sv_mpi.hpp"
+// #include "svsim/sv_mpi.hpp"
 #endif
 
 #ifdef CUDA_ENABLED
-#include "svsim/sv_cuda.cuh"
-#include "dmsim/dm_cuda.cuh"
+// #include "svsim/sv_cuda.cuh"
+// #include "dmsim/dm_cuda.cuh"
 #include "stabsim/stab_cuda.cuh"
 #endif
 
 #ifdef CUDA_MPI_ENABLED
-#include "svsim/sv_cuda_mpi.cuh"
-#include "dmsim/dm_cuda_mpi.cuh"
+// #include "svsim/sv_cuda_mpi.cuh"
+// #include "dmsim/dm_cuda_mpi.cuh"
 #endif
 
 #ifdef HIP_ENABLED
-#include "svsim/sv_hip.hpp"
-#include "dmsim/dm_hip.hpp"
+// #include "svsim/sv_hip.hpp"
+// #include "dmsim/dm_hip.hpp"
 #endif
 
 #include <iostream>
@@ -76,58 +74,39 @@ public:
                        { return std::toupper(c); });
         if (backend == "CPU")
         {
-            if (simulator_method == "DM")
-                return std::make_shared<NWQSim::DM_CPU>(numQubits);
-            else if(simulator_method == "STAB")
-                return std::make_shared<NWQSim::STAB_CPU>(numQubits);
-            else
-                return std::make_shared<NWQSim::SV_CPU>(numQubits);
+            return std::make_shared<NWQSim::STAB_CPU>(numQubits);
         }
 
 #ifdef OMP_ENABLED
-        else if (backend == "OPENMP")
-        {
-            return std::make_shared<NWQSim::SV_OMP>(numQubits);
-        }
+        // else if (backend == "OPENMP")
+        // {
+        //     return std::make_shared<NWQSim::SV_OMP>(numQubits);
+        // }
 #endif
 
 #ifdef MPI_ENABLED
-        else if (backend == "MPI")
-        {
-            return std::make_shared<NWQSim::SV_MPI>(numQubits);
-        }
+        // else if (backend == "MPI")
+        // {
+        //     return std::make_shared<NWQSim::SV_MPI>(numQubits);
+        // }
 #endif
 
 #ifdef CUDA_ENABLED
         else if (backend == "NVGPU")
         {
-            if (simulator_method == "SV")
-                return std::make_shared<NWQSim::SV_CUDA>(numQubits);
-            else if (simulator_method == "STAB")
-                return std::make_shared<NWQSim::STAB_CUDA>(numQubits);
-            else
-                return std::make_shared<NWQSim::DM_CUDA>(numQubits);
+            return std::make_shared<NWQSim::STAB_CUDA>(numQubits);
         }
 #endif
 
-#ifdef HIP_ENABLED
-        else if (backend == "AMDGPU")
-        {
-            if (simulator_method == "SV")
-                return std::make_shared<NWQSim::SV_HIP>(numQubits);
-            else
-                return std::make_shared<NWQSim::DM_HIP>(numQubits);
-        }
-#endif
 
 #ifdef CUDA_MPI_ENABLED
-        else if (backend == "NVGPU_MPI")
-        {
-            if (simulator_method == "SV")
-                return std::make_shared<NWQSim::SV_CUDA_MPI>(numQubits);
-            else
-                return std::make_shared<NWQSim::DM_CUDA_MPI>(numQubits);
-        }
+        // else if (backend == "NVGPU_MPI")
+        // {
+        //     if (simulator_method == "SV")
+        //         return std::make_shared<NWQSim::SV_CUDA_MPI>(numQubits);
+        //     else
+        //         return std::make_shared<NWQSim::DM_CUDA_MPI>(numQubits);
+        // }
 #endif
         else if (backend == "LIST")
         {

@@ -8,7 +8,6 @@
 #include "stabsim/src/pauli_math.hpp"
 #endif
 
-#include "private/gate_factory/sv_gate.hpp"
 #include <stdexcept> // For std::runtime_error
 #include <vector>
 #include <string>
@@ -29,7 +28,7 @@ namespace NWQSim
     public:
         QuantumState(SimType _sim_type) : sim_type(_sim_type)
         {
-            registerGates();
+            // registerGates();
         } // constructor
         virtual ~QuantumState() {} // virtual destructor
 

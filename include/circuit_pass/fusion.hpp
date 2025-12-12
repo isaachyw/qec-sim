@@ -24,8 +24,6 @@
 #include "../nwq_util.hpp"
 
 #include "../private/sim_gate.hpp"
-#include "../private/gate_factory/sv_gate.hpp"
-#include "../private/gate_factory/dm_gate.hpp"
 
 #define vec_dim_1q(sim_type) (sim_type == SimType::SV ? 2 : 4)
 #define vec_dim_2q(sim_type) (sim_type == SimType::SV ? 4 : 16)
@@ -599,39 +597,6 @@ namespace NWQSim
         gate_fusion_2q_absorb_1q_forward(tmp1_circuit, tmp2_circuit, n_qubits, sim_type);
         gate_fusion_2q_absorb_1q_backward(tmp2_circuit, tmp3_circuit, n_qubits, sim_type);
         gate_fusion_2q(tmp3_circuit, fused_circuit, n_qubits, sim_type);
-
-        return fused_circuit;
-    }
-
-    inline
-    std::vector<SVGate> fuse_circuit_sv(std::shared_ptr<NWQSim::Circuit> circuit)
-    {
-        std::vector<SVGate> gates = GateFactory::getInstance().getSVGates(circuit->get_gates());
-
-        if (!Config::ENABLE_FUSION)
-        {
-            return gates;
-        }
-        IdxType n_qubits = circuit->num_qubits();
-
-        return fuse_circuit_gates(gates, n_qubits, SimType::SV);
-    }
-    inline
-    std::vector<DMGate> fuse_circuit_dm(std::shared_ptr<NWQSim::Circuit> circuit)
-    {
-        std::vector<DMGate> gates = getDMGates(circuit->get_gates(), circuit->num_qubits());
-
-        if (!Config::ENABLE_FUSION)
-        {
-            return gates;
-        }
-        IdxType n_qubits = circuit->num_qubits();
-
-        std::vector<DMGate> tmp1_circuit;
-        std::vector<DMGate> fused_circuit;
-
-        gate_fusion_1q(gates, tmp1_circuit, n_qubits, SimType::DM);
-        gate_fusion_2q(tmp1_circuit, fused_circuit, n_qubits, SimType::DM);
 
         return fused_circuit;
     }
