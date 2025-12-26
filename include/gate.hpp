@@ -20,6 +20,7 @@
 #include <memory>
 #include <string>
 #include <cstring>
+#include <vector>
 namespace NWQSim
 {
 
@@ -50,11 +51,21 @@ namespace NWQSim
          ******************************************/
         H,
         /******************************************
+         * Multi-target Hadamard gate: applies H
+         * independently to each listed qubit
+         ******************************************/
+        H_MULTI,
+        /******************************************
          * Clifford gate: sqrt(Z) phase gate
          * S = [1 0]
                [0 i]
          ******************************************/
         S,
+        /******************************************
+         * Multi-target phase gate: applies S to
+         * each qubit provided on the instruction
+         ******************************************/
+        S_MULTI,
         /******************************************
          * Clifford gate: inverse of sqrt(Z)
          * SDG = [1  0]
@@ -121,6 +132,12 @@ namespace NWQSim
          * Apply X when the control qubit is 1
          ******************************************/
         CX,
+        /******************************************
+         * Multi-target CNOT gate
+         * Applies CX to every (control,target)
+         * pair provided in the operand list
+         ******************************************/
+        CX_MULTI,
         /******************************************
          * Controlled Y gate
          * Apply Y when the control qubit is 1
@@ -307,7 +324,9 @@ namespace NWQSim
         "Y",
         "Z",
         "H",
+        "H_MULTI",
         "S",
+        "S_MULTI",
         "SDG",
         "T",
         "TDG",
@@ -320,6 +339,7 @@ namespace NWQSim
         "U",
         // Controlled
         "CX",
+        "CX_MULTI",
         "CY",
         "CZ",
         "CH",
@@ -381,6 +401,8 @@ namespace NWQSim
         std::string mod_op;
         std::string mod_noise;
         ValType mod_value;
+        // Stores auxiliary qubit indices. Used for MOD_NOISE gate targeting as well as
+        // the qubit lists associated with multi-target single-qubit Clifford gates.
         std::vector<IdxType> mod_qubits;
         std::vector<double> channel_probabilities;
 
@@ -476,7 +498,18 @@ namespace NWQSim
             {
                 ss << " ";
             }
-            if (ctrl >= 0)
+            if (!mod_qubits.empty())
+            {
+                for (size_t idx = 0; idx < mod_qubits.size(); ++idx)
+                {
+                    if (idx > 0)
+                    {
+                        ss << ",";
+                    }
+                    ss << mod_qubits[idx];
+                }
+            }
+            else if (ctrl >= 0)
             {
                 ss << ctrl << "," << qubit;
             }

@@ -4,30 +4,55 @@
 #include <vector>
 #include <iomanip>
 #include <regex>
+#include <sstream>
+#include <cctype>
 
 #include "../../backendManager.hpp"
 #include "../../state.hpp"
 #include "../../circuit.hpp"
 #include "../../nwq_util.hpp"
 
-int extractQubitIndex(const std::string& qubitStr) 
+int extractQubitIndex(const std::string &qubitStr)
 {
-    std::regex qubitRegex(R"((\w+)\[(\d+)\])");  // match format like qregless[0]
+    static const std::regex qubitRegex(R"((\w+)\[(\d+)\])");
     std::smatch match;
-    if (std::regex_search(qubitStr, match, qubitRegex) && match.size() >= 3) 
+    if (std::regex_search(qubitStr, match, qubitRegex) && match.size() >= 3)
     {
-        try {
-            return std::stoi(match.str(2));  // Get the number inside the brackets
-        } catch (const std::exception& e) {
+        try
+        {
+            return std::stoi(match.str(2));
+        }
+        catch (const std::exception &e)
+        {
             std::cerr << "Error parsing qubit index from: " << qubitStr << " - " << e.what() << std::endl;
             return -1;
         }
     }
-    else
+
+    std::string digits_only;
+    digits_only.reserve(qubitStr.size());
+    for (char ch : qubitStr)
     {
-        std::cerr << "Gate called but no qubit index! String: " << qubitStr << std::endl;
-        return -1;
+        if (std::isdigit(static_cast<unsigned char>(ch)))
+        {
+            digits_only.push_back(ch);
+        }
     }
+    if (!digits_only.empty())
+    {
+        try
+        {
+            return std::stoi(digits_only);
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Error parsing integer qubit index from: " << qubitStr << " - " << e.what() << std::endl;
+            return -1;
+        }
+    }
+
+    std::cerr << "Gate called but no qubit index! String: " << qubitStr << std::endl;
+    return -1;
 }
 
 int extractNumQubit(const std::string& qubitStr) 
@@ -53,6 +78,42 @@ std::vector<std::string> split_by_semicolon(const std::string& str) {
             tokens.push_back(token.substr(start, end - start + 1));
     }
     return tokens;
+}
+
+std::vector<NWQSim::IdxType> extract_multi_target_qubits(std::istringstream &stream)
+{
+    std::vector<NWQSim::IdxType> qubits;
+    std::string qubitStr;
+    while (stream >> qubitStr)
+    {
+        for (char &ch : qubitStr)
+        {
+            if (ch == ',')
+            {
+                ch = ' ';
+            }
+        }
+
+        std::istringstream token_stream(qubitStr);
+        std::string chunk;
+        while (token_stream >> chunk)
+        {
+            while (!chunk.empty() && (chunk.back() == ',' || chunk.back() == ';'))
+            {
+                chunk.pop_back();
+            }
+            if (chunk.empty())
+            {
+                continue;
+            }
+            int idx = extractQubitIndex(chunk);
+            if (idx != -1)
+            {
+                qubits.push_back(static_cast<NWQSim::IdxType>(idx));
+            }
+        }
+    }
+    return qubits;
 }
 
 
@@ -143,17 +204,35 @@ bool appendQASMToCircuit(std::shared_ptr<NWQSim::Circuit>& circuit, const std::s
             }
             else if(gate == "s")
             {
-                std::string qubitStr;
-                lineStream >> qubitStr;
-                qubit1 = extractQubitIndex(qubitStr);
-                if (qubit1 != -1) circuit->S(qubit1);
+                auto qubits = extract_multi_target_qubits(lineStream);
+                if (qubits.empty())
+                {
+                    continue;
+                }
+                if (qubits.size() == 1)
+                {
+                    circuit->S(qubits.front());
+                }
+                else
+                {
+                    circuit->S(qubits);
+                }
             }
             else if(gate == "h")
             {
-                std::string qubitStr;
-                lineStream >> qubitStr;
-                qubit1 = extractQubitIndex(qubitStr);
-                if (qubit1 != -1) circuit->H(qubit1);
+                auto qubits = extract_multi_target_qubits(lineStream);
+                if (qubits.empty())
+                {
+                    continue;
+                }
+                if (qubits.size() == 1)
+                {
+                    circuit->H(qubits.front());
+                }
+                else
+                {
+                    circuit->H(qubits);
+                }
             }
             else if(gate == "m" || gate == "measure")
             {
@@ -242,26 +321,37 @@ bool appendQASMToCircuit(std::shared_ptr<NWQSim::Circuit>& circuit, const std::s
             }
             else if(gate == "cx" || gate == "cxyz")
             {
-                std::string qubitStr1, qubitStr2;
-                std::getline(lineStream, qubitStr1, ',');
-                std::getline(lineStream, qubitStr2);
+                std::string operand_str;
+                std::getline(lineStream, operand_str);
+                std::istringstream operand_stream(operand_str);
+                auto qubits = extract_multi_target_qubits(operand_stream);
 
-                qubitStr1.erase(0, qubitStr1.find_first_not_of(" \t"));
-                qubitStr1.erase(qubitStr1.find_last_not_of(" \t") + 1);
-                qubitStr2.erase(0, qubitStr2.find_first_not_of(" \t"));
-                qubitStr2.erase(qubitStr2.find_last_not_of(" \t") + 1);
-
-                qubit1 = extractQubitIndex(qubitStr1);
-                qubit2 = extractQubitIndex(qubitStr2);
-
-                if (qubit1 != -1 && qubit2 != -1)
+                if (qubits.empty())
                 {
-                    circuit->CX(qubit1, qubit2);
+                    continue;
+                }
+
+                if (gate == "cx" && qubits.size() > 2)
+                {
+                    if (qubits.size() % 2 != 0)
+                    {
+                        std::cerr << "CX multi-target requires an even number of qubit indices" << std::endl;
+                        continue;
+                    }
+                    circuit->CX(qubits);
+                }
+                else if (qubits.size() == 2)
+                {
+                    circuit->CX(qubits[0], qubits[1]);
                     if (gate == "cxyz")
                     {
-                        circuit->CY(qubit1, qubit2);
-                        circuit->CZ(qubit1, qubit2);
+                        circuit->CY(qubits[0], qubits[1]);
+                        circuit->CZ(qubits[0], qubits[1]);
                     }
+                }
+                else
+                {
+                    std::cerr << "Invalid operand count for " << gate << std::endl;
                 }
             }
         }

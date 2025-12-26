@@ -40,7 +40,7 @@ endif()
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
 if(CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "/Users/garn195/Library/CloudStorage/OneDrive-PNNL/Project_Repositories/STABSim/python/build-py312/install_local_manifest.txt"
+  file(WRITE "/Users/garn195/Library/CloudStorage/OneDrive-PNNL/Project_Repositories/STABSim/python/build-py313/install_local_manifest.txt"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()
 if(CMAKE_INSTALL_COMPONENT)
@@ -56,6 +56,6 @@ else()
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "/Users/garn195/Library/CloudStorage/OneDrive-PNNL/Project_Repositories/STABSim/python/build-py312/${CMAKE_INSTALL_MANIFEST}"
+  file(WRITE "/Users/garn195/Library/CloudStorage/OneDrive-PNNL/Project_Repositories/STABSim/python/build-py313/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()

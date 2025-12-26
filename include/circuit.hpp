@@ -8,6 +8,7 @@
 #include <sstream>
 #include <memory>
 #include <cmath>
+#include <stdexcept>
 
 namespace NWQSim
 {
@@ -29,10 +30,53 @@ namespace NWQSim
         IdxType n_qubits;
         IdxType n_expect;
 
+        void append_multi_target_gate(OP op, const std::vector<IdxType> &qubit_list)
+        {
+            if (qubit_list.empty())
+            {
+                return;
+            }
+
+            Gate G(op, qubit_list.front());
+            G.n_qubits = qubit_list.size();
+
+            for (auto target : qubit_list)
+            {
+                if (target < 0 || target >= n_qubits)
+                {
+                    throw std::out_of_range("Multi-target gate qubit index out of range");
+                }
+                G.mod_qubits.push_back(target);
+            }
+
+            gates->push_back(G);
+        }
+
+        void append_multi_control_gate(OP op, const std::vector<IdxType> &qubit_pairs)
+        {
+            if (qubit_pairs.size() < 2 || (qubit_pairs.size() % 2 != 0))
+            {
+                throw std::invalid_argument("Multi-control gate requires an even number of qubit indices");
+            }
+
+            Gate G(op, qubit_pairs[1], qubit_pairs[0]);
+            G.n_qubits = qubit_pairs.size();
+
+            for (auto q : qubit_pairs)
+            {
+                if (q < 0 || q >= n_qubits)
+                {
+                    throw std::out_of_range("Multi-control gate qubit index out of range");
+                }
+                G.mod_qubits.push_back(q);
+            }
+
+            gates->push_back(G);
+        }
+
     public:
         // user input gate sequence
         std::shared_ptr<std::vector<Gate>> gates;
-
         Circuit(IdxType _n_qubits) : n_qubits(_n_qubits), n_expect(0)
         {
             // Implementation of constructor
@@ -97,61 +141,110 @@ namespace NWQSim
             IdxType max_depth = 0;
             IdxType one_q_gates = 0;
             IdxType two_q_gates = 0;
+
+            auto apply_single_target_depth = [&](IdxType target)
+            {
+                if (target < 0 || target >= n_qubits)
+                {
+                    return;
+                }
+                IdxType depth = qubit_depth[target] + 1;
+                qubit_depth[target] = depth;
+                g1_gates++;
+                one_q_gates++;
+                if (depth > max_depth)
+                {
+                    max_depth = depth;
+                }
+            };
+
+            auto handle_multi_qubit_gate = [&](const Gate &gate)
+            {
+                if (!gate.mod_qubits.empty())
+                {
+                    for (auto target : gate.mod_qubits)
+                    {
+                        apply_single_target_depth(target);
+                    }
+                }
+                else
+                {
+                    apply_single_target_depth(gate.qubit);
+                }
+            };
+
+            auto apply_two_qubit_gate = [&](IdxType ctrl, IdxType target)
+            {
+                if (ctrl < 0 || ctrl >= n_qubits || target < 0 || target >= n_qubits)
+                {
+                    return;
+                }
+                IdxType depth = std::max(qubit_depth[ctrl], qubit_depth[target]) + 1;
+                g2_gates++;
+                two_q_gates++;
+                qubit_g2_gates[ctrl]++;
+                qubit_g2_gates[target]++;
+                if (ctrl == target)
+                    printf("Exception: target==ctrl\n");
+                qubit_depth[ctrl] = depth;
+                qubit_depth[target] = depth;
+                if (depth > max_depth)
+                {
+                    max_depth = depth;
+                }
+            };
+
+            auto handle_multi_cx_gate = [&](const Gate &gate)
+            {
+                if (gate.mod_qubits.empty())
+                {
+                    apply_two_qubit_gate(gate.ctrl, gate.qubit);
+                    return;
+                }
+                for (size_t idx = 0; idx + 1 < gate.mod_qubits.size(); idx += 2)
+                {
+                    apply_two_qubit_gate(gate.mod_qubits[idx], gate.mod_qubits[idx + 1]);
+                }
+            };
+
             for (IdxType i = 0; i < gates->size(); i++)
             {
-                if (gates->at(i).op_name == OP::MA)
+                const Gate &gate = gates->at(i);
+
+                if (gate.op_name == OP::MA)
                 {
                     n_measure += n_qubits;
                     continue;
                 }
-                if (gates->at(i).op_name == OP::M)
+                if (gate.op_name == OP::M)
                 {
                     n_measure++;
                     continue;
                 }
-                if (gates->at(i).op_name == OP::MOD_NOISE)
+                if (gate.op_name == OP::MOD_NOISE)
                 {
                     continue; // Skip noise update gate
                 }
-                IdxType ctrl = gates->at(i).ctrl;
-                IdxType target = gates->at(i).qubit;
+                if (gate.op_name == OP::H_MULTI || gate.op_name == OP::S_MULTI)
+                {
+                    handle_multi_qubit_gate(gate);
+                    continue;
+                }
+                if (gate.op_name == OP::CX_MULTI)
+                {
+                    handle_multi_cx_gate(gate);
+                    continue;
+                }
+                IdxType ctrl = gate.ctrl;
+                IdxType target = gate.qubit;
 
-                // Calculate the depth of this gate based on the depths of the control and target qubits
-                IdxType depth;
                 if (ctrl == -1)
                 {
-                    // Single-qubit gate
-                    depth = qubit_depth[target] + 1;
-                    g1_gates++;
+                    apply_single_target_depth(target);
                 }
                 else
                 {
-                    // Two-qubit gate
-                    depth = std::max(qubit_depth[ctrl], qubit_depth[target]) + 1;
-                    g2_gates++;
-
-                    // Increment the number of two-qubit gates applied to each qubit
-                    qubit_g2_gates[ctrl]++;
-                    qubit_g2_gates[target]++;
-
-                    if (ctrl == target)
-                        printf("Exception: target==ctrl\n");
-                }
-                // Update the depth of the control and target qubits
-                if (ctrl == -1)
-                {
-                    one_q_gates++;
-                }
-                else
-                {
-                    qubit_depth[ctrl] = depth;
-                    two_q_gates++;
-                }
-                qubit_depth[target] = depth;
-                // Update the maximum depth if the current depth is greater than the previous maximum
-                if (depth > max_depth)
-                {
-                    max_depth = depth;
+                    apply_two_qubit_gate(ctrl, target);
                 }
             }
             // Calculate the gate density, retention lifespan, and entanglement variance of the circuit
@@ -253,6 +346,10 @@ namespace NWQSim
             Gate G(OP::H, qubit);
             gates->push_back(G);
         }
+        void H(const std::vector<IdxType> &qubits)
+        {
+            append_multi_target_gate(OP::H_MULTI, qubits);
+        }
         void S(IdxType qubit)
         {
             // Clifford gate: sqrt(Z) phase gate
@@ -261,6 +358,10 @@ namespace NWQSim
             */
             Gate G(OP::S, qubit);
             gates->push_back(G);
+        }
+        void S(const std::vector<IdxType> &qubits)
+        {
+            append_multi_target_gate(OP::S_MULTI, qubits);
         }
         void EXPECT(void *obsptr)
         {
@@ -361,6 +462,10 @@ namespace NWQSim
             */
             Gate G(OP::CX, qubit, ctrl, 2);
             gates->push_back(G);
+        }
+        void CX(const std::vector<IdxType> &qubit_pairs)
+        {
+            append_multi_control_gate(OP::CX_MULTI, qubit_pairs);
         }
         void CY(IdxType ctrl, IdxType qubit)
         {

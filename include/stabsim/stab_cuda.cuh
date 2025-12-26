@@ -760,6 +760,29 @@ namespace NWQSim
 
     }; //End tableau class
 
+    __device__ inline void apply_cx_row(int32_t *x_arr,
+                                        int32_t *z_arr,
+                                        int32_t *r_arr,
+                                        IdxType cols,
+                                        IdxType row_idx,
+                                        IdxType ctrl_qubit,
+                                        IdxType target_qubit)
+    {
+        if (ctrl_qubit < 0 || ctrl_qubit >= cols || target_qubit < 0 || target_qubit >= cols)
+        {
+            return;
+        }
+        IdxType target_index = row_idx * cols + target_qubit;
+        IdxType ctrl_index = row_idx * cols + ctrl_qubit;
+        int32_t x_val = x_arr[target_index];
+        int32_t z_val = z_arr[target_index];
+        int32_t x_ctrl_val = x_arr[ctrl_index];
+        int32_t z_ctrl_val = z_arr[ctrl_index];
+        r_arr[row_idx] ^= (x_ctrl_val & z_val & (x_val ^ z_ctrl_val ^ 1));
+        x_arr[target_index] = x_val ^ x_ctrl_val;
+        z_arr[ctrl_index] = z_ctrl_val ^ z_val;
+    }
+
     __device__ int32_t global_p;
 
     __inline__ __device__ void global_32_reduction(int32_t* input, int32_t& lane_id, IdxType& i) 
@@ -855,15 +878,36 @@ namespace NWQSim
                     if (i < scratch_row)
                     {
                         IdxType target_offset = gates_gpu[k].mod_qubits_offset;
-                        IdxType target_count  = gates_gpu[k].mod_qubits_size;
+                        IdxType target_count = gates_gpu[k].mod_qubits_size;
+
+                        if (target_offset < 0 || target_count == 0)
+                        {
+                            int32_t x_val = x_arr[index];
+                            int32_t z_val = z_arr[index];
+                            r_arr[i] ^= (x_val & z_val);
+                            x_arr[index] = z_val;
+                            z_arr[index] = x_val;
+                            break;
+                        }
+
+                        const IdxType *multi_targets = stab_gpu->gate_mod_qubits_gpu + target_offset;
+                        unsigned warp_mask = __activemask();
                         int32_t phase = 0;
 
-                        const IdxType* multi_targets = stab_gpu->gate_mod_qubits_gpu + target_offset;
                         for (IdxType t = 0; t < target_count; ++t)
                         {
-                            IdxType target = multi_targets[t];
-                            IdxType t_index = i * cols + target;
+                            IdxType shared_target = 0;
+                            if (lane_id == 0)
+                            {
+                                shared_target = multi_targets[t];
+                            }
+                            shared_target = __shfl_sync(warp_mask, shared_target, 0);
+                            if (shared_target < 0 || shared_target >= cols)
+                            {
+                                continue;
+                            }
 
+                            IdxType t_index = i * cols + shared_target;
                             int32_t x_val = x_arr[t_index];
                             int32_t z_val = z_arr[t_index];
 
@@ -890,6 +934,52 @@ namespace NWQSim
                     }
                     break;
 
+                case OP::S_MULTI:
+                {
+                    if (i < scratch_row)
+                    {
+                        IdxType target_offset = gates_gpu[k].mod_qubits_offset;
+                        IdxType target_count = gates_gpu[k].mod_qubits_size;
+
+                        if (target_offset < 0 || target_count == 0)
+                        {
+                            int32_t x_val = x_arr[index];
+                            int32_t z_val = z_arr[index];
+                            r_arr[i] ^= (x_val & z_val);
+                            z_arr[index] = z_val ^ x_val;
+                            break;
+                        }
+
+                        const IdxType *multi_targets = stab_gpu->gate_mod_qubits_gpu + target_offset;
+                        unsigned warp_mask = __activemask();
+                        int32_t phase = 0;
+
+                        for (IdxType t = 0; t < target_count; ++t)
+                        {
+                            IdxType shared_target = 0;
+                            if (lane_id == 0)
+                            {
+                                shared_target = multi_targets[t];
+                            }
+                            shared_target = __shfl_sync(warp_mask, shared_target, 0);
+                            if (shared_target < 0 || shared_target >= cols)
+                            {
+                                continue;
+                            }
+
+                            IdxType t_index = i * cols + shared_target;
+                            int32_t x_val = x_arr[t_index];
+                            int32_t z_val = z_arr[t_index];
+
+                            phase ^= (x_val & z_val);
+                            z_arr[t_index] = z_val ^ x_val;
+                        }
+
+                        r_arr[i] ^= phase;
+                    }
+                    break;
+                }
+
                 case OP::SDG:
                     if (i < scratch_row)
                     {
@@ -915,6 +1005,40 @@ namespace NWQSim
                         //Entry
                         x_arr[index] ^= x_ctrl;
                         z_arr[ctrl_index] ^= z;
+                    }
+                    break;
+                }
+
+                case OP::CX_MULTI:
+                {
+                    if (i < scratch_row)
+                    {
+                        IdxType pair_offset = gates_gpu[k].mod_qubits_offset;
+                        IdxType pair_count = gates_gpu[k].mod_qubits_size;
+
+                        if (pair_offset < 0 || pair_count == 0)
+                        {
+                            apply_cx_row(x_arr, z_arr, r_arr, cols, i, b, a);
+                        }
+                        else
+                        {
+                            const IdxType *multi_pairs = stab_gpu->gate_mod_qubits_gpu + pair_offset;
+                            unsigned warp_mask = __activemask();
+
+                            for (IdxType pair_idx = 0; pair_idx + 1 < pair_count; pair_idx += 2)
+                            {
+                                IdxType ctrl_qubit = 0;
+                                IdxType target_qubit = 0;
+                                if (lane_id == 0)
+                                {
+                                    ctrl_qubit = multi_pairs[pair_idx];
+                                    target_qubit = multi_pairs[pair_idx + 1];
+                                }
+                                ctrl_qubit = __shfl_sync(warp_mask, ctrl_qubit, 0);
+                                target_qubit = __shfl_sync(warp_mask, target_qubit, 0);
+                                apply_cx_row(x_arr, z_arr, r_arr, cols, i, ctrl_qubit, target_qubit);
+                            }
+                        }
                     }
                     break;
                 }

@@ -2125,6 +2125,34 @@ namespace NWQSim
             //For swapping rows
             int tempVal;
             int half_rows = rows >> 1;
+
+            auto apply_h_gate = [&](IdxType target)
+            {
+                if (target < 0 || target >= cols)
+                {
+                    return;
+                }
+                for (int i = 0; i < rows - 1; i++)
+                {
+                    r[i] ^= (x[i][target] & z[i][target]);
+                    int temp = x[i][target];
+                    x[i][target] = z[i][target];
+                    z[i][target] = temp;
+                }
+            };
+
+            auto apply_s_gate = [&](IdxType target)
+            {
+                if (target < 0 || target >= cols)
+                {
+                    return;
+                }
+                for (int i = 0; i < rows - 1; i++)
+                {
+                    r[i] ^= (x[i][target] & z[i][target]);
+                    z[i][target] ^= x[i][target];
+                }
+            };
             //Loop over every gate in the circuit and apply them
             for (int k = 0; k < g; k++)
             {
@@ -2150,28 +2178,76 @@ namespace NWQSim
                         break;
                     }
 
-                    case OP::H: 
-                        for(int i = 0; i < rows-1; i++)
+                    case OP::CX_MULTI:
+                    {
+                        auto apply_cx_pair = [&](IdxType ctrl, IdxType target)
                         {
-                            //Phase
-                            r[i] ^= (x[i][a] & z[i][a]);
-                            //Entry -- swap x and z bits
-                            tempVal = x[i][a];
-                            x[i][a] = z[i][a];
-                            z[i][a] = tempVal; 
+                            if (ctrl < 0 || ctrl >= cols || target < 0 || target >= cols)
+                            {
+                                return;
+                            }
+                            for (int i = 0; i < rows - 1; i++)
+                            {
+                                r[i] ^= (x[i][ctrl] & z[i][target] & (x[i][target] ^ z[i][ctrl] ^ 1));
+                                x[i][target] ^= x[i][ctrl];
+                                z[i][ctrl] ^= z[i][target];
+                            }
+                        };
+
+                        if (gate.mod_qubits.empty())
+                        {
+                            apply_cx_pair(gate.ctrl, gate.qubit);
+                        }
+                        else
+                        {
+                            const auto &pairs = gate.mod_qubits;
+                            for (size_t idx = 0; idx + 1 < pairs.size(); idx += 2)
+                            {
+                                apply_cx_pair(pairs[idx], pairs[idx + 1]);
+                            }
                         }
                         break;
+                    }
+
+                    case OP::H:
+                        apply_h_gate(a);
+                        break;
+
+                    case OP::H_MULTI:
+                    {
+                        if (gate.mod_qubits.empty())
+                        {
+                            apply_h_gate(a);
+                        }
+                        else
+                        {
+                            for (auto target : gate.mod_qubits)
+                            {
+                                apply_h_gate(target);
+                            }
+                        }
+                        break;
+                    }
         
                     case OP::S:
-                        for(int i = 0; i < rows-1; i++)
-                        {
-                            //Phase
-                            r[i] ^= (x[i][a] & z[i][a]);
+                        apply_s_gate(a);
+                        break;
 
-                            //Entry
-                            z[i][a] ^= x[i][a];
+                    case OP::S_MULTI:
+                    {
+                        if (gate.mod_qubits.empty())
+                        {
+                            apply_s_gate(a);
+                        }
+                        else
+                        {
+                            for (auto target : gate.mod_qubits)
+                            {
+                                apply_s_gate(target);
+                            }
                         }
                         break;
+                    }
 
                     case OP::SDG:
                         for(int i = 0; i < rows-1; i++)
@@ -2315,29 +2391,28 @@ namespace NWQSim
 
                         break;
                     }
-
                     
-                    case OP::COMB:
-                        // std::cout << "Gamma " << gate.gamma << std::endl;
-                        switch(comb_generator(gate.phi, gate.gamma, gate.lam/2))
-                        {
-                            case 0: //Do nothing
-                                break;
-                            case 1: //Apply Z
-                                apply_Z(a);
-                                break;
-                            case 2: //Reset to |0>
-                                reset_routine(a);
-                                break;
-                            case 3: //Reset to |1>
-                                reset_routine(a);
-                                apply_X(a);
-                                break;
-                            default:
-                                std::logic_error("Invalid damping result");
-                                exit(1);
-                        }
-                        break;
+                    // case OP::COMB:
+                    //     // std::cout << "Gamma " << gate.gamma << std::endl;
+                    //     switch(comb_generator(gate.phi, gate.gamma, gate.lam/2))
+                    //     {
+                    //         case 0: //Do nothing
+                    //             break;
+                    //         case 1: //Apply Z
+                    //             apply_Z(a);
+                    //             break;
+                    //         case 2: //Reset to |0>
+                    //             reset_routine(a);
+                    //             break;
+                    //         case 3: //Reset to |1>
+                    //             reset_routine(a);
+                    //             apply_X(a);
+                    //             break;
+                    //         default:
+                    //             std::logic_error("Invalid damping result");
+                    //             exit(1);
+                    //     }
+                    //     break;
 
                     case OP::T1:
                         switch(T1_gen(gate.gamma))

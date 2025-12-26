@@ -2,6 +2,29 @@
 #include <pybind11/stl.h>
 #include <pybind11/numpy.h>
 #include <pybind11/complex.h>
+void bind_append_stim(py::class_<NWQSim::Circuit, CircuitPtr> &cls)
+{
+    cls.def("append_stim_file",
+            [](NWQSim::Circuit &self, const std::string &path) -> NWQSim::Circuit &
+            {
+                int num_qubits = static_cast<int>(self.num_qubits());
+                NWQSim::appendStimCircuitFromFile(self, path, num_qubits);
+                self.set_num_qubits(num_qubits);
+                return self;
+            },
+            py::arg("path"),
+            py::return_value_policy::reference_internal);
+    cls.def("append_stim_text",
+            [](NWQSim::Circuit &self, const std::string &text) -> NWQSim::Circuit &
+            {
+                int num_qubits = static_cast<int>(self.num_qubits());
+                NWQSim::appendStimCircuitFromString(self, text, num_qubits);
+                self.set_num_qubits(num_qubits);
+                return self;
+            },
+            py::arg("text"),
+            py::return_value_policy::reference_internal);
+}
 
 #include <algorithm>
 #include <cctype>
@@ -16,6 +39,7 @@
 #include "../../include/config.hpp"
 #include "../../include/nwq_util.hpp"
 #include "../../include/state.hpp"
+#include "../../include/stabsim/src/stim_extraction.hpp"
 
 namespace py = pybind11;
 
@@ -46,6 +70,21 @@ namespace
         std::string lower_name = to_lower(name);
         cls.def(lower_name.c_str(), binder, py::arg("qubit"), py::return_value_policy::reference_internal);
         cls.def(name, binder, py::arg("qubit"), py::return_value_policy::reference_internal);
+    }
+
+    template <typename Method>
+    void bind_multi_target_gate(py::class_<NWQSim::Circuit, CircuitPtr> &cls,
+                                const char *name,
+                                Method method)
+    {
+        auto binder = [method](NWQSim::Circuit &self, const std::vector<IdxType> &targets) -> NWQSim::Circuit &
+        {
+            (self.*method)(targets);
+            return self;
+        };
+        std::string lower_name = to_lower(name);
+        cls.def((lower_name + "_multi").c_str(), binder, py::arg("qubits"), py::return_value_policy::reference_internal);
+        cls.def((std::string(name) + "_MULTI").c_str(), binder, py::arg("qubits"), py::return_value_policy::reference_internal);
     }
 
     template <typename Method>
@@ -311,6 +350,30 @@ namespace
         cls.def("measure_all", binder, py::arg("shots"), py::return_value_policy::reference_internal);
         cls.def("MA", binder, py::arg("shots"), py::return_value_policy::reference_internal);
     }
+
+    void bind_append_stim(py::class_<NWQSim::Circuit, CircuitPtr> &cls)
+    {
+        cls.def("append_stim_file",
+                [](NWQSim::Circuit &self, const std::string &path) -> NWQSim::Circuit &
+                {
+                    int num_qubits = static_cast<int>(self.num_qubits());
+                    NWQSim::appendStimCircuitFromFile(self, path, num_qubits);
+                    self.set_num_qubits(num_qubits);
+                    return self;
+                },
+                py::arg("path"),
+                py::return_value_policy::reference_internal);
+        cls.def("append_stim_text",
+                [](NWQSim::Circuit &self, const std::string &text) -> NWQSim::Circuit &
+                {
+                    int num_qubits = static_cast<int>(self.num_qubits());
+                    NWQSim::appendStimCircuitFromString(self, text, num_qubits);
+                    self.set_num_qubits(num_qubits);
+                    return self;
+                },
+                py::arg("text"),
+                py::return_value_policy::reference_internal);
+    }
 }
 
 PYBIND11_MODULE(nwqsim, m)
@@ -347,8 +410,16 @@ PYBIND11_MODULE(nwqsim, m)
     bind_single_qubit_gate(circuit, "X", &NWQSim::Circuit::X);
     bind_single_qubit_gate(circuit, "Y", &NWQSim::Circuit::Y);
     bind_single_qubit_gate(circuit, "Z", &NWQSim::Circuit::Z);
-    bind_single_qubit_gate(circuit, "H", &NWQSim::Circuit::H);
-    bind_single_qubit_gate(circuit, "S", &NWQSim::Circuit::S);
+    bind_single_qubit_gate(
+        circuit,
+        "H",
+        static_cast<void (NWQSim::Circuit::*)(IdxType)>(&NWQSim::Circuit::H));
+    bind_single_qubit_gate(
+        circuit,
+        "S",
+        static_cast<void (NWQSim::Circuit::*)(IdxType)>(&NWQSim::Circuit::S));
+    bind_multi_target_gate(circuit, "H", static_cast<void (NWQSim::Circuit::*)(const std::vector<IdxType> &)>(&NWQSim::Circuit::H));
+    bind_multi_target_gate(circuit, "S", static_cast<void (NWQSim::Circuit::*)(const std::vector<IdxType> &)>(&NWQSim::Circuit::S));
     bind_single_qubit_gate(circuit, "SDG", &NWQSim::Circuit::SDG);
     bind_single_qubit_gate(circuit, "T", &NWQSim::Circuit::T);
     bind_single_qubit_gate(circuit, "TDG", &NWQSim::Circuit::TDG);
@@ -400,6 +471,7 @@ PYBIND11_MODULE(nwqsim, m)
     bind_measure_all(circuit);
     bind_ccx_gate(circuit);
     bind_cswap_gate(circuit);
+    bind_append_stim(circuit);
 
     py::class_<NWQSim::QuantumState, StatePtr>(m, "QuantumState")
         .def("reset", &NWQSim::QuantumState::reset_state)
@@ -522,6 +594,32 @@ PYBIND11_MODULE(nwqsim, m)
               return BackendManager::create_state(backend, num_qubits, method);
           },
           py::arg("backend"), py::arg("num_qubits"), py::arg("method"));
+
+    m.def("circuit_from_stim_file",
+          [](const std::string &path, IdxType num_qubits)
+          {
+              IdxType seed = num_qubits >= 0 ? std::max<IdxType>(num_qubits, 1) : 1;
+              auto circuit = std::make_shared<NWQSim::Circuit>(seed);
+              int working_qubits = static_cast<int>(seed);
+              NWQSim::appendStimCircuitFromFile(*circuit, path, working_qubits);
+              circuit->set_num_qubits(working_qubits);
+              return circuit;
+          },
+          py::arg("path"),
+          py::arg("num_qubits") = -1);
+
+    m.def("circuit_from_stim_text",
+          [](const std::string &text, IdxType num_qubits)
+          {
+              IdxType seed = num_qubits >= 0 ? std::max<IdxType>(num_qubits, 1) : 1;
+              auto circuit = std::make_shared<NWQSim::Circuit>(seed);
+              int working_qubits = static_cast<int>(seed);
+              NWQSim::appendStimCircuitFromString(*circuit, text, working_qubits);
+              circuit->set_num_qubits(working_qubits);
+              return circuit;
+          },
+          py::arg("text"),
+          py::arg("num_qubits") = -1);
 
     m.def("available_backends", []()
           {
