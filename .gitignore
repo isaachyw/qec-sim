@@ -69,3 +69,6 @@ CMakeCache.txt
 /stabilizer
 
 /.venv-py312
+
+*.png
+*.csv
