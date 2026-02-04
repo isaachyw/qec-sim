@@ -67,6 +67,7 @@ def run_experiment(
         max_errors=max_errors,
         tasks=tasks,
         decoders=["pymatching"],
+        print_progress=True,
     )
     return list(stats)
 
@@ -151,10 +152,6 @@ def save_results(stats: list[sinter.TaskStats], output_file: str = "sinter_data.
 
 
 if __name__ == "__main__":
-    print("Running sinter experiment...")
-    print("Distances: [3, 5, 7]")
-    print("Depolarizing rates: 1e-3 to ~3e-2 (log scale)")
-
     stats = run_experiment(
         distances=[3, 5, 7, 9, 11],
         depol_rates=list(np.logspace(-3, -1.5, 8)),
