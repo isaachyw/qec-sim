@@ -12,20 +12,14 @@ from stim_utils import save_stim_svg
 # for a given noisy circuit, deplorzing without idle error, apply pauli(tau) based on the gate type to all the qubits in the circuit
 
 
-class PauliT:
-    # static data
-    # https://quantumai.google/hardware/datasheet/weber.pdf Sycamore
-    # google willow data
-    t1 = 15 * 1e3
-    t2 = 20 * 1e3  # estimate
-    sqgate = 25
-    tqgate = 22
-    measurement_time = 1.1 * 1e3  # not sure.
-    reset_time = sqgate  # not sure.
-
-    def __init__(self, t1, t2):
-        self.t1 = t1
-        self.t2 = t2
+class _PauliT:
+    # subclasses define these (all times in ns)
+    t1: float
+    t2: float
+    sqgate: float
+    tqgate: float
+    measurement_time: float
+    reset_time: float
 
     def apply_idle(
         self,
@@ -56,15 +50,15 @@ class PauliT:
         """
         match category:
             case "C1":
-                return PauliT.sqgate
+                return self.sqgate
             case "C2":
-                return PauliT.tqgate
+                return self.tqgate
             case "M1" | "M2" | "MPP":
-                return PauliT.measurement_time
+                return self.measurement_time
             case "R1":
-                return PauliT.reset_time
+                return self.reset_time
             case "MR1":
-                return PauliT.measurement_time + PauliT.reset_time
+                return self.measurement_time + self.reset_time
             case _:
                 return None  # Annotations ("info") and noise ("!?")
 
@@ -135,18 +129,50 @@ class PauliT:
                     p_x, p_y, p_z = self._compute_pauli_probs(gate_time)
                     # Only add noise if there's a non-zero probability
                     if p_x > 0 or p_y > 0 or p_z > 0:
-                        output.append("PAULI_CHANNEL_1", all_qubits, (p_x, p_y, p_z))
+                        output.append(
+                            "PAULI_CHANNEL_1", instr.targets_copy(), (p_x, p_y, p_z)
+                        )
 
         return output
 
 
+class GoogleT(_PauliT):
+    # https://quantumai.google/hardware/datasheet/weber.pdf Sycamore
+    # google willow data (all times in ns)
+    t1 = 15e3
+    t2 = 20e3  # estimate
+    sqgate = 25
+    tqgate = 22
+    measurement_time = 1.1e3  # not sure (the paper said one full cycle is 1.1 us)
+    reset_time = 25  # not sure
+
+    def __str__(self) -> str:
+        return "GoogleT"
+
+
+class IBMT(_PauliT):
+    # https://arxiv.org/abs/2503.04642 (all times in ns, converted from us)
+    # device data from https://arxiv.org/abs/2503.04642
+    # in (us)
+    # H,S (single qubit gate) gate 0.02, CNOT, CZ(two qubit gate) 0.04, Measurement 0.6, reset 0.5, T1 30 (us), T2 30 (us)
+    t1 = 30e3
+    t2 = 30e3
+    sqgate = 20  # 0.02 us
+    tqgate = 40  # 0.04 us
+    measurement_time = 600  # 0.6 us
+    reset_time = 500  # 0.5 us
+
+    def __str__(self) -> str:
+        return "IBMT"
+
+
 if __name__ == "__main__":
-    sg = PauliT(t1=68 * 1e3, t2=98 * 1e3)
+    sg = GoogleT()
     deplor_noise_model = qldpc.circuits.DepolarizingNoiseModel(
         p=0.001, include_idling_error=False
     )
     circ = stim.Circuit.generated("surface_code:rotated_memory_x", rounds=3, distance=3)
-    circ = deplor_noise_model.noisy_circuit(circ)
+    # circ = deplor_noise_model.noisy_circuit(circ)
     print("Original circuit gate categories:")
     for instr in circ:
         if isinstance(instr, stim.CircuitRepeatBlock):
@@ -159,5 +185,5 @@ if __name__ == "__main__":
     print(f"Original circuit: {len(circ)} instructions")
     print(f"Noisy circuit: {len(noisy_circ)} instructions")
     print(noisy_circ.detector_error_model(decompose_errors=True))
-    # save_stim_svg(noisy_circ, "noisy_circuit.svg")
-    # save_stim_svg(circ, "original_circuit.svg")
+    save_stim_svg(noisy_circ, "noisy_circuit.svg")
+    save_stim_svg(circ, "original_circuit.svg")

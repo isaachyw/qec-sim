@@ -1,16 +1,13 @@
 [project]
-name = "stabsim"
+name = "ther"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "jupyter>=1.1.1",
-    "matplotlib>=3.10.8",
-    "numpy~=2.2",
-    "qldpc==0.2.6",
+    "numpy==2.2.2",
+    "qldpc>=0.2.6",
     "scienceplots>=2.2.0",
+    "stim>=1.15.0",
 ]
-
-[dependency-groups]
-dev = ["ty>=0.0.14"]
