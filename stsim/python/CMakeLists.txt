@@ -1,7 +1,12 @@
 cmake_minimum_required(VERSION 4.1)
 project(stabsim-python)
 
-# Use venv Python if VENV_PATH is set, otherwise use system Python
+# Prefer the local uv virtual environment if present.
+if(NOT DEFINED VENV_PATH AND EXISTS "${PROJECT_SOURCE_DIR}/../.venv/bin/python3")
+    set(VENV_PATH "${PROJECT_SOURCE_DIR}/../.venv")
+endif()
+
+# Use venv Python if VENV_PATH is set, otherwise use system Python.
 if(DEFINED VENV_PATH)
     set(Python3_EXECUTABLE "${VENV_PATH}/bin/python3")
 endif()
@@ -26,7 +31,7 @@ pybind11_add_module(nwqsim MODULE src/nwqsim_py.cpp)
 
 target_compile_features(nwqsim PRIVATE cxx_std_17)
 
-target_include_directories(nwqsim PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(nwqsim PRIVATE ${PROJECT_SOURCE_DIR}/../include)
 
 if(OpenMP_FOUND)
     target_link_libraries(nwqsim PRIVATE OpenMP::OpenMP_CXX)

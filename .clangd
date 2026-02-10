@@ -1,0 +1,17 @@
+CompileFlags:
+  CompilationDatabase: stsim/python/build
+  Compiler: /usr/bin/g++-9
+  BuiltinHeaders: QueryDriver
+  Add:
+    - -xc++
+    - -std=gnu++17
+    - -isystem
+    - /usr/include/c++/9
+    - -isystem
+    - /usr/include/x86_64-linux-gnu/c++/9
+    - -isystem
+    - /usr/include/c++/9/backward
+    - -isystem
+    - /usr/lib/gcc/x86_64-linux-gnu/9/include
+    - -I/home/isaachyw/research/stabsim/stsim/include
+    - -I/home/isaachyw/research/stabsim/stsim/include/private
