@@ -13,5 +13,7 @@ CompileFlags:
     - /usr/include/c++/9/backward
     - -isystem
     - /usr/lib/gcc/x86_64-linux-gnu/9/include
+    - -isystem
+    - /usr/local/cuda-12.8/include
     - -I/home/isaachyw/research/stabsim/stsim/include
     - -I/home/isaachyw/research/stabsim/stsim/include/private

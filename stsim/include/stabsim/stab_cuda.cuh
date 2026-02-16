@@ -689,9 +689,9 @@ namespace NWQSim
             measurement_count = max_measurements;
 
             if (measurement_count > 0) {
-                SAFE_ALOC_GPU(d_measurement_results, measurement_count * sizeof(IdxType));
-                h_measurement_results = new IdxType[measurement_count];
-                SAFE_ALOC_GPU(d_measurement_idx_counter, sizeof(IdxType));
+                SAFE_ALOC_GPU(d_measurement_results, measurement_count * sizeof(int32_t));
+                h_measurement_results = new int32_t[measurement_count];
+                SAFE_ALOC_GPU(d_measurement_idx_counter, sizeof(int32_t));
             }
         }
 
