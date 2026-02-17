@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./build/**)",
+      "Read(**/build/**)",
+      "Read(./debug/**)",
+      "Read(./release/**)",
+      "Read(**/install/**)",
+      "Read(./**/__pycache__/**)",
+      "Read(./**/.ipynb_checkpoints/**)",
+      "Read(./venv/**)",
+      "Read(./.venv/**)",
+      "Read(./env/**)",
+      "Read(./.env/**)",
+      "Read(./.venv-py312/**)",
+      "Read(./.vscode/**)",
+      "Read(./.idea/**)",
+      "Read(**/CMakeFiles/**)",
+      "Read(**/CMakeCache.txt)",
+      "Read(./results/**)",
+      "Read(./data/**)"
+    ]
+  }
+}

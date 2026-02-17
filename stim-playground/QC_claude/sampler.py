@@ -85,16 +85,15 @@ class SamplerResult:
 
 
 def _proc_worker(
-    sampler: "MCSampler", child_entropy: int | list, n: int
+    sampler: "MCSampler", child_seed: np.random.SeedSequence, n: int
 ) -> tuple[list, list]:
     """
     Worker function for ProcessPoolExecutor.
 
     Must be defined at module level so multiprocessing can pickle it by name.
-    Receives the sampler by value (pickled once per worker process startup),
-    and an integer entropy to reconstruct an independent RNG stream.
+    child_seed is a spawned SeedSequence (unique per worker via spawn_key).
     """
-    rng = np.random.default_rng(np.random.SeedSequence(child_entropy))
+    rng = np.random.default_rng(child_seed)
     bits_list: list[list[int]] = []
     weights_list: list[float] = []
     for _ in range(n):
@@ -227,17 +226,15 @@ class MCSampler:
             chunk_sizes = [base + (1 if i < rem else 0) for i in range(n_workers)]
 
             # Each worker gets an independent, reproducible RNG child stream.
-            # Pass integer entropy (picklable) rather than SeedSequence objects.
-            child_entropies = [
-                s.entropy for s in np.random.SeedSequence(seed).spawn(n_workers)
-            ]
+            # SeedSequence objects are picklable and carry unique spawn_key state.
+            child_seeds = np.random.SeedSequence(seed).spawn(n_workers)
 
             all_bits = []
             all_weights = []
             with ProcessPoolExecutor(max_workers=n_workers) as pool:
                 futures = [
-                    pool.submit(_proc_worker, self, e, n)
-                    for e, n in zip(child_entropies, chunk_sizes)
+                    pool.submit(_proc_worker, self, s, n)
+                    for s, n in zip(child_seeds, chunk_sizes)
                 ]
                 for f in futures:
                     b, w = f.result()
@@ -263,7 +260,7 @@ class MCSampler:
             if isinstance(op, MeasureOp):
                 results = op.apply(sim)  # list[bool]
                 bits.extend(int(b) for b in results)
-            elif decomp is None:
+            elif isinstance(op, CliffordOp):
                 op.apply(sim)  # CliffordOp
             else:
                 coeff, prob, gate = decomp.sample(rng)

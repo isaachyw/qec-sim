@@ -1,0 +1,14 @@
+1. add the damp channel same as the one in stsim
+
+2. make sure the pauliT version fit to that version
+
+
+3. simulate the exact with QC_claude and the one with PauliT with stim(sinter)
+    -- analyze the sampling cost 
+
+4. analyze the LER of those two versions
+
+5. adapt to BB code and BP-OSD decoder (as well as relayBP)
+
+
+6. see if the detector error model from duke is better

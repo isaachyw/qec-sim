@@ -33,7 +33,14 @@ from dataclasses import dataclass
 import numpy as np
 import stim
 
-from .circuit import Circuit, CliffordOp, RZOp, PauliNoiseOp, TwoQubitPauliNoiseOp, MeasureOp
+from .circuit import (
+    Circuit,
+    CliffordOp,
+    RZOp,
+    PauliNoiseOp,
+    TwoQubitPauliNoiseOp,
+    MeasureOp,
+)
 from .decompositions import (
     GateDecomposition,
     rz_decomposition,
@@ -44,6 +51,7 @@ from .observable import PauliObservable
 
 
 # ── Gate-term application helper ──────────────────────────────────────────────
+
 
 def _apply_gate_term(
     sim: stim.TableauSimulator, gate: str, qubits: tuple[int, ...]
@@ -60,31 +68,32 @@ def _apply_gate_term(
     if len(qubits) == 1:
         q = qubits[0]
         match gate:
-            case 'I':
+            case "I":
                 pass
-            case 'X':
+            case "X":
                 sim.x(q)
-            case 'Y':
+            case "Y":
                 sim.y(q)
-            case 'Z':
+            case "Z":
                 sim.z(q)
-            case 'S':
+            case "S":
                 sim.s(q)
     else:
         # Two-qubit Pauli: apply each character to its qubit
         for pauli, q in zip(gate, qubits):
             match pauli:
-                case 'I':
+                case "I":
                     pass
-                case 'X':
+                case "X":
                     sim.x(q)
-                case 'Y':
+                case "Y":
                     sim.y(q)
-                case 'Z':
+                case "Z":
                     sim.z(q)
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
+
 
 @dataclass
 class EstimationResult:
@@ -100,6 +109,7 @@ class EstimationResult:
                      Noise channels contribute 1-norm = 1 (no overhead).
         raw_samples: Array of weighted per-sample estimates (shape: [n_samples]).
     """
+
     value: float
     std_error: float
     n_samples: int
@@ -117,20 +127,23 @@ class EstimationResult:
 
 # ── Module-level worker (must be at module level for pickle) ──────────────────
 
+
 def _estimator_proc_worker(
-    estimator: "MCEstimator", child_entropy: int | list, n: int
+    estimator: "MCEstimator", child_seed: np.random.SeedSequence, n: int
 ) -> list[float]:
     """
     Worker function for ProcessPoolExecutor.
 
     Must be at module level so multiprocessing can pickle it by name.
+    child_seed is a spawned SeedSequence (unique per worker via spawn_key).
     Returns the real parts of n weighted sample values.
     """
-    rng = np.random.default_rng(np.random.SeedSequence(child_entropy))
+    rng = np.random.default_rng(child_seed)
     return [estimator._single_sample(rng).real for _ in range(n)]
 
 
 # ── Core estimator ────────────────────────────────────────────────────────────
+
 
 class MCEstimator:
     """
@@ -224,27 +237,23 @@ class MCEstimator:
             EstimationResult with value, uncertainty, and diagnostics.
         """
         import os
+
         if n_workers == -1:
             n_workers = os.cpu_count()
-
         if n_workers is None or n_workers <= 1:
             # ── Serial path ───────────────────────────────────────────────────
             rng = np.random.default_rng(seed)
-            raw: list[float] = [
-                self._single_sample(rng).real for _ in range(n_samples)
-            ]
+            raw: list[float] = [self._single_sample(rng).real for _ in range(n_samples)]
         else:
             # ── Parallel path (ProcessPoolExecutor) ───────────────────────────
             base, rem = divmod(n_samples, n_workers)
             chunk_sizes = [base + (1 if i < rem else 0) for i in range(n_workers)]
-            child_entropies = [
-                s.entropy for s in np.random.SeedSequence(seed).spawn(n_workers)
-            ]
+            child_seeds = np.random.SeedSequence(seed).spawn(n_workers)
             raw = []
             with ProcessPoolExecutor(max_workers=n_workers) as pool:
                 futures = [
-                    pool.submit(_estimator_proc_worker, self, e, n)
-                    for e, n in zip(child_entropies, chunk_sizes)
+                    pool.submit(_estimator_proc_worker, self, s, n)
+                    for s, n in zip(child_seeds, chunk_sizes)
                 ]
                 for f in futures:
                     raw.extend(f.result())
@@ -292,6 +301,7 @@ class MCEstimator:
 
 
 # ── Functional interface ──────────────────────────────────────────────────────
+
 
 def estimate(
     circuit: Circuit,
