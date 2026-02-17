@@ -27,6 +27,7 @@ Implementation notes:
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
@@ -114,6 +115,21 @@ class EstimationResult:
         )
 
 
+# ── Module-level worker (must be at module level for pickle) ──────────────────
+
+def _estimator_proc_worker(
+    estimator: "MCEstimator", child_entropy: int | list, n: int
+) -> list[float]:
+    """
+    Worker function for ProcessPoolExecutor.
+
+    Must be at module level so multiprocessing can pickle it by name.
+    Returns the real parts of n weighted sample values.
+    """
+    rng = np.random.default_rng(np.random.SeedSequence(child_entropy))
+    return [estimator._single_sample(rng).real for _ in range(n)]
+
+
 # ── Core estimator ────────────────────────────────────────────────────────────
 
 class MCEstimator:
@@ -191,23 +207,49 @@ class MCEstimator:
         self,
         n_samples: int = 10_000,
         seed: int | None = None,
+        n_workers: int | None = None,
     ) -> EstimationResult:
         """
         Run the Monte Carlo estimator.
 
         Args:
-            n_samples: Number of Monte Carlo samples.
-            seed:      Random seed for reproducibility.
+            n_samples:  Number of Monte Carlo samples.
+            seed:       Random seed for reproducibility.
+            n_workers:  Number of parallel worker processes.
+                        None or 1 → serial (default).
+                        -1 → one process per logical CPU (os.cpu_count()).
+                        N → N processes.
 
         Returns:
             EstimationResult with value, uncertainty, and diagnostics.
         """
-        rng = np.random.default_rng(seed)
-        samples = np.zeros(n_samples, dtype=complex)
-        for i in range(n_samples):
-            samples[i] = self._single_sample(rng)
+        import os
+        if n_workers == -1:
+            n_workers = os.cpu_count()
 
-        real_samples = samples.real
+        if n_workers is None or n_workers <= 1:
+            # ── Serial path ───────────────────────────────────────────────────
+            rng = np.random.default_rng(seed)
+            raw: list[float] = [
+                self._single_sample(rng).real for _ in range(n_samples)
+            ]
+        else:
+            # ── Parallel path (ProcessPoolExecutor) ───────────────────────────
+            base, rem = divmod(n_samples, n_workers)
+            chunk_sizes = [base + (1 if i < rem else 0) for i in range(n_workers)]
+            child_entropies = [
+                s.entropy for s in np.random.SeedSequence(seed).spawn(n_workers)
+            ]
+            raw = []
+            with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                futures = [
+                    pool.submit(_estimator_proc_worker, self, e, n)
+                    for e, n in zip(child_entropies, chunk_sizes)
+                ]
+                for f in futures:
+                    raw.extend(f.result())
+
+        real_samples = np.array(raw, dtype=np.float64)
         value = float(np.mean(real_samples))
         std_error = float(np.std(real_samples, ddof=1) / np.sqrt(n_samples))
 
@@ -256,19 +298,23 @@ def estimate(
     observable: PauliObservable,
     n_samples: int = 10_000,
     seed: int | None = None,
+    n_workers: int | None = None,
 ) -> EstimationResult:
     """
     Functional interface: estimate E[observable] for `circuit` from |0...0>.
 
-    Equivalent to ``MCEstimator(circuit, observable).estimate(n_samples, seed)``.
+    Equivalent to ``MCEstimator(circuit, observable).estimate(n_samples, seed, n_workers)``.
 
     Args:
         circuit:    Circuit with Clifford, RZ, and/or noise ops.
         observable: Pauli observable to measure.
         n_samples:  Number of Monte Carlo samples.
         seed:       Random seed for reproducibility.
+        n_workers:  Number of parallel worker processes (None=serial, -1=all CPUs).
 
     Returns:
         EstimationResult with value, uncertainty, and diagnostics.
     """
-    return MCEstimator(circuit, observable).estimate(n_samples=n_samples, seed=seed)
+    return MCEstimator(circuit, observable).estimate(
+        n_samples=n_samples, seed=seed, n_workers=n_workers
+    )
