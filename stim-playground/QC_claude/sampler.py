@@ -32,13 +32,16 @@ from .circuit import (
     RZOp,
     PauliNoiseOp,
     TwoQubitPauliNoiseOp,
+    DampOp,
     MeasureOp,
+    TickOp,
 )
 from .decompositions import (
     GateDecomposition,
     rz_decomposition,
     pauli_noise_decomp_1q,
     pauli_noise_decomp_2q,
+    damp_decomposition,
 )
 from .estimator import _apply_gate_term
 
@@ -146,23 +149,39 @@ class MCSampler:
         self._circuit = circuit
         self._n_measurements = circuit.n_measurements
 
-        # Build op plan: list of (op, decomp | None)
-        # CliffordOp and MeasureOp → decomp=None  (applied directly)
-        # RZOp / PauliNoiseOp / TwoQubitPauliNoiseOp → decomp set
-        self._op_plan: list[tuple[object, GateDecomposition | None]] = []
+        # Build op plan: list of (op, decomps | None)
+        #   CliffordOp / MeasureOp → None  (applied directly)
+        #   TickOp                 → skipped
+        #   RZOp / PauliNoiseOp / DampOp → list of per-qubit GateDecompositions
+        #   TwoQubitPauliNoiseOp → single-element list[GateDecomposition]
+        self._op_plan: list[tuple[object, list[GateDecomposition] | None]] = []
         for op in circuit.ops:
             if isinstance(op, (CliffordOp, MeasureOp)):
                 self._op_plan.append((op, None))
             elif isinstance(op, RZOp):
-                self._op_plan.append((op, rz_decomposition(op.qubit, op.theta)))
+                self._op_plan.append(
+                    (op, [rz_decomposition(q, op.theta) for q in op.qubits])
+                )
             elif isinstance(op, PauliNoiseOp):
                 self._op_plan.append(
-                    (op, pauli_noise_decomp_1q(op.qubit, op.px, op.py, op.pz))
+                    (
+                        op,
+                        [
+                            pauli_noise_decomp_1q(q, op.px, op.py, op.pz)
+                            for q in op.qubits
+                        ],
+                    )
                 )
             elif isinstance(op, TwoQubitPauliNoiseOp):
                 self._op_plan.append(
-                    (op, pauli_noise_decomp_2q(op.q0, op.q1, op.probs))
+                    (op, [pauli_noise_decomp_2q(op.q0, op.q1, op.probs)])
                 )
+            elif isinstance(op, DampOp):
+                self._op_plan.append(
+                    (op, [damp_decomposition(q, op.t, op.T1, op.T2) for q in op.qubits])
+                )
+            elif isinstance(op, TickOp):
+                pass  # tick markers have no simulation effect
             else:
                 raise TypeError(f"Unknown op type: {type(op)}")
 
@@ -170,9 +189,10 @@ class MCSampler:
     def one_norm(self) -> float:
         """Product of 1-norms for all decompositions (noise ops contribute 1.0)."""
         result = 1.0
-        for _, decomp in self._op_plan:
-            if decomp is not None:
-                result *= decomp.one_norm
+        for _, decomps in self._op_plan:
+            if decomps is not None:
+                for decomp in decomps:
+                    result *= decomp.one_norm
         return result
 
     def sample(
@@ -252,20 +272,23 @@ class MCSampler:
     def _single_sample(self, rng: np.random.Generator) -> tuple[list[int], complex]:
         """Run one trajectory; return (bit_list, complex_weight)."""
         sim = stim.TableauSimulator()
-        sim.set_num_qubits(self._circuit.n_qubits)
+        # stim circuit num qubits is bigger than the real, might cause tableau track extra qubits
+        # sim.set_num_qubits(self._circuit.n_qubits)
         weight: complex = 1.0 + 0j
         bits: list[int] = []
 
-        for op, decomp in self._op_plan:
+        for op, decomps in self._op_plan:
             if isinstance(op, MeasureOp):
-                results = op.apply(sim)  # list[bool]
-                bits.extend(int(b) for b in results)
+                result = op.apply(sim)  # bool
+                bits.append(int(result))
             elif isinstance(op, CliffordOp):
-                op.apply(sim)  # CliffordOp
+                op.apply(sim)
             else:
-                coeff, prob, gate = decomp.sample(rng)
-                _apply_gate_term(sim, gate, decomp.qubits)
-                weight *= coeff / prob
+                # Each qubit in a SIMD op is sampled independently.
+                for decomp in decomps:  # type: ignore[union-attr]
+                    coeff, prob, gate = decomp.sample(rng)
+                    _apply_gate_term(sim, gate, decomp.qubits)
+                    weight *= coeff / prob
 
         return bits, weight
 

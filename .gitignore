@@ -79,3 +79,7 @@ results/
 build/
 
 data/
+
+delta/
+
+scratch.py

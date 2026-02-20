@@ -51,7 +51,7 @@ class PauliObservable:
                 f"Pauli string '{pauli_str}' has length {len(pauli_str)} "
                 f"but circuit has {self.n_qubits} qubits."
             )
-        padded = pauli_str.ljust(self.n_qubits, 'I')
+        padded = pauli_str.ljust(self.n_qubits, "I")
         return stim.PauliString(padded)
 
     # ── Factory methods ───────────────────────────────────────────────────────
@@ -59,36 +59,36 @@ class PauliObservable:
     @classmethod
     def single_pauli(
         cls, n_qubits: int, qubit: int, pauli: str, coefficient: complex = 1.0
-    ) -> 'PauliObservable':
+    ) -> "PauliObservable":
         """
         Observable consisting of a single Pauli operator on one qubit.
 
         Example: single_pauli(3, 1, 'Z') → IZI
         """
-        if pauli not in ('X', 'Y', 'Z'):
+        if pauli not in ("X", "Y", "Z"):
             raise ValueError(f"pauli must be 'X', 'Y', or 'Z', got '{pauli}'")
-        s = 'I' * qubit + pauli + 'I' * (n_qubits - qubit - 1)
+        s = "I" * qubit + pauli + "I" * (n_qubits - qubit - 1)
         return cls(n_qubits, [(s, coefficient)])
 
     @classmethod
-    def single_z(cls, n_qubits: int, qubit: int) -> 'PauliObservable':
+    def single_z(cls, n_qubits: int, qubit: int) -> "PauliObservable":
         """Z operator on a single qubit: observable = Z_qubit."""
-        return cls.single_pauli(n_qubits, qubit, 'Z')
+        return cls.single_pauli(n_qubits, qubit, "Z")
 
     @classmethod
-    def single_x(cls, n_qubits: int, qubit: int) -> 'PauliObservable':
+    def single_x(cls, n_qubits: int, qubit: int) -> "PauliObservable":
         """X operator on a single qubit."""
-        return cls.single_pauli(n_qubits, qubit, 'X')
+        return cls.single_pauli(n_qubits, qubit, "X")
 
     @classmethod
-    def single_y(cls, n_qubits: int, qubit: int) -> 'PauliObservable':
+    def single_y(cls, n_qubits: int, qubit: int) -> "PauliObservable":
         """Y operator on a single qubit."""
-        return cls.single_pauli(n_qubits, qubit, 'Y')
+        return cls.single_pauli(n_qubits, qubit, "Y")
 
     @classmethod
     def pauli_sum(
         cls, n_qubits: int, terms: list[tuple[str, complex]]
-    ) -> 'PauliObservable':
+    ) -> "PauliObservable":
         """
         General Pauli sum.
 

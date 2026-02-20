@@ -12,3 +12,10 @@ dependencies = [
     "scienceplots>=2.2.0",
     "stim>=1.15.0",
 ]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.8.0",
+    "ty>=0.0.17",
+]
