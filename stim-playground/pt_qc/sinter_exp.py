@@ -1,3 +1,5 @@
+# run experiment with different
+
 import os
 import sinter
 import stim
@@ -177,8 +179,8 @@ def save_results(stats: list[sinter.TaskStats], output_file: str = "sinter_data.
 if __name__ == "__main__":
     stats = run_experiment(
         distances=[3, 5, 7, 9, 11],
-        depol_rates=list(np.logspace(-3, -1.5, 8)),
-        max_shots=100_000,
+        depol_rates=list(np.logspace(-3, -1.5, 12)),
+        max_shots=300_000,
         num_workers=os.cpu_count() or 1,
         pauli_t=GoogleT() if HARDWARE == "Google" else IBMT(),
     )

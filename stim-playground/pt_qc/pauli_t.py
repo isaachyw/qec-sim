@@ -1,3 +1,10 @@
+import sys
+from pathlib import Path
+
+# exp/ → QC_claude/ → stim-playground/ -> pt_qc/
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+
+
 import qldpc
 import numpy as np
 import stim
@@ -76,6 +83,40 @@ class _PauliT:
         p_y = p_x
         p_z = 0.5 * (1 - np.exp(-t / self.t2)) - p_x
         return (p_x, p_y, p_z)
+
+    def add_idle_before_measurement(
+        self, circuit: stim.Circuit, t: float
+    ) -> stim.Circuit:
+        num_qubits = circuit.num_qubits
+        if num_qubits == 0:
+            return circuit.copy()
+
+        all_qubits = list(range(num_qubits))
+        p_x, p_y, p_z = self._compute_pauli_probs(t)
+        output = stim.Circuit()
+
+        for instr in circuit:
+            if isinstance(instr, stim.CircuitRepeatBlock):
+                processed_body = self.add_idle_before_measurement(instr.body_copy(), t)
+                output.append(
+                    stim.CircuitRepeatBlock(
+                        repeat_count=instr.repeat_count,
+                        body=processed_body,
+                    )
+                )
+            else:
+                try:
+                    category = self.categorize_gates(instr)
+                except KeyError:
+                    category = None
+
+                if category in ("M1", "M2", "MPP", "MR1"):
+                    if p_x > 0 or p_y > 0 or p_z > 0:
+                        output.append("PAULI_CHANNEL_1", all_qubits, (p_x, p_y, p_z))
+
+                output.append(instr)
+
+        return output
 
     def apply_thermal_relaxation(self, circuit: stim.Circuit) -> stim.Circuit:
         """
@@ -164,6 +205,27 @@ class IBMT(_PauliT):
 
     def __str__(self) -> str:
         return "IBMT"
+
+
+class IonTrapT(_PauliT):
+    # we only add idling before measurement, thus all time just 0. (T1=242.75us, T2=188.165us)
+    t1 = 242.75e3
+    t2 = 188.165e3
+    sqgate = 0
+    tqgate = 0
+    measurement_time = 0
+    reset_time = 0
+
+    def __str__(self) -> str:
+        return "IBMT"
+
+    def apply_thermal_relaxation(self, circuit: stim.Circuit) -> stim.Circuit:
+        raise NotImplementedError("IonTrapT does not support thermal relaxation")
+
+    def add_idle_before_measurement(
+        self, circuit: stim.Circuit, t: float
+    ) -> stim.Circuit:
+        return super().add_idle_before_measurement(circuit, t)
 
 
 if __name__ == "__main__":

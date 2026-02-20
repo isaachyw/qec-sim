@@ -1,14 +1,23 @@
 """
 Circuit representation supporting Clifford gates, non-Clifford RZ gates,
-Pauli noise channels, and Z-basis measurements.
+Pauli noise channels, T1/T2 damping, and Z-basis measurements.
 
 - CliffordOp:          Clifford gate applied deterministically to the simulator.
-- RZOp:                Non-Clifford RZ(theta) gate; decomposed via quasi-probability sampling.
-- PauliNoiseOp:        Single-qubit Pauli noise; sampled with true probability (1-norm = 1).
-- TwoQubitPauliNoiseOp Two-qubit Pauli noise; sampled with true probability (1-norm = 1).
+                       Supports SIMD: one op covers any number of targets
+                       (e.g. H 0 1 2 → sim.h(0, 1, 2)).
+- RZOp:                Non-Clifford RZ(theta) gate; decomposed via quasi-probability
+                       sampling. Supports SIMD: one op covers multiple qubits,
+                       each qubit independently sampled. 1-norm = single^n_qubits.
+- PauliNoiseOp:        Single-qubit Pauli noise; supports SIMD (same px/py/pz on
+                       all listed qubits, each sampled independently). 1-norm = 1.
+- TwoQubitPauliNoiseOp Two-qubit Pauli noise on one qubit pair. 1-norm = 1.
+- DampOp:              Combined T1/T2 amplitude+phase damping; 3-term stabilizer
+                       decomposition. Supports SIMD (same T1/T2/t on all listed
+                       qubits, each sampled independently).
 - MeasureOp:           Z-basis measurement (optionally with reset); used by MCSampler.
 
-Use Circuit.from_stim() to import an existing stim.Circuit (Clifford + noise + M/MR instructions).
+Use Circuit.from_stim() to import an existing stim.Circuit (Clifford + noise + M/MR
+instructions). Multi-target Stim instructions are parsed as a single SIMD op.
 """
 
 from __future__ import annotations
@@ -52,7 +61,7 @@ _STIM_2Q_CLIFFORD: dict[str, str] = {
 
 # Instructions to silently skip during from_stim parsing
 _STIM_SKIP: frozenset[str] = frozenset({
-    'TICK', 'QUBIT_COORDS', 'DETECTOR', 'OBSERVABLE_INCLUDE', 'SHIFT_COORDS',
+    'QUBIT_COORDS', 'DETECTOR', 'OBSERVABLE_INCLUDE', 'SHIFT_COORDS',
     'MX', 'MY', 'MPP', 'MRX', 'MRY',
     'HERALDED_ERASE', 'HERALDED_PAULI_CHANNEL_1', 'MPAD',
 })
@@ -62,7 +71,15 @@ _STIM_SKIP: frozenset[str] = frozenset({
 
 @dataclass(frozen=True)
 class CliffordOp:
-    """A Clifford gate applied to one or two qubits."""
+    """
+    A Clifford gate applied to one or more qubits (SIMD-style).
+
+    For single-qubit gates (H, S, Z, …):
+        targets holds all the qubits; applied with one Stim call, e.g. sim.h(0, 1, 2).
+    For two-qubit gates (CX, CZ, SWAP, …):
+        targets holds interleaved pairs (c0, t0, c1, t1, …);
+        applied with one Stim call, e.g. sim.cx(0, 1, 2, 3).
+    """
     name: str
     targets: tuple[int, ...]
 
@@ -119,8 +136,14 @@ class CliffordOp:
 
 @dataclass(frozen=True)
 class RZOp:
-    """Non-Clifford RZ(theta) gate; quasiprobability-decomposed during sampling."""
-    qubit: int
+    """
+    Non-Clifford RZ(theta) gate; quasiprobability-decomposed during sampling.
+
+    Supports SIMD: one op can target multiple qubits with the same angle theta.
+    Each qubit is sampled independently from the same {I, Z, S} decomposition.
+    The total 1-norm = single_qubit_1_norm ** len(qubits).
+    """
+    qubits: tuple[int, ...]
     theta: float  # rotation angle in radians
 
 
@@ -131,9 +154,10 @@ class PauliNoiseOp:
 
         chi(rho) = (1-px-py-pz)*I + px*X(rho) + py*Y(rho) + pz*Z(rho)
 
-    All coefficients are non-negative (true probabilities); 1-norm = 1.
+    Supports SIMD: one op can list multiple qubits (all with the same px/py/pz).
+    Each qubit is sampled independently. Total 1-norm = 1 (exact probability).
     """
-    qubit: int
+    qubits: tuple[int, ...]
     px: float   # X-error probability
     py: float   # Y-error probability
     pz: float   # Z-error probability
@@ -162,6 +186,44 @@ class TwoQubitPauliNoiseOp:
 
 
 @dataclass(frozen=True)
+class TickOp:
+    """
+    A tick (time-boundary marker).  No effect during simulation.
+    Displayed as 'TICK' when the circuit is printed; parsed from Stim TICK instructions.
+    """
+
+
+@dataclass(frozen=True)
+class DampOp:
+    """
+    Combined amplitude + phase damping channel (T1/T2 relaxation).
+
+    Supports SIMD: one op can target multiple qubits with the same t/T1/T2.
+    Each qubit is sampled independently. The total 1-norm is per-qubit 1-norm
+    raised to the power of len(qubits).
+
+    Parameters:
+        qubits: Target qubit indices.
+        t:      Evolution time (same units as T1, T2).
+        T1:     Amplitude relaxation time.  float('inf') → no amplitude damping.
+        T2:     Total coherence time (T2*). float('inf') → no dephasing at all.
+                Must satisfy T2 ≤ 2·T1 (physical constraint: Tφ must be positive).
+
+    Internally computes the pure dephasing time via:
+        1/Tφ = 1/T2 - 1/(2·T1)
+
+    Decomposition (3 Clifford terms per qubit):
+        c̃₀ · Identity  +  c̃₁ · Z  +  c̃₂ · Reset|0⟩
+    When T1 ≥ T2:       all c̃ᵢ ≥ 0 (exact probability, 1-norm = 1.0).
+    When T1 < T2 ≤ 2T1: c̃₁ < 0   (quasiprobability regime, 1-norm > 1.0).
+    """
+    qubits: tuple[int, ...]
+    t: float
+    T1: float
+    T2: float
+
+
+@dataclass(frozen=True)
 class MeasureOp:
     """
     Z-basis measurement on one or more qubits.
@@ -182,7 +244,14 @@ class MeasureOp:
 
 
 # Union type for any circuit operation
-Op = Union[CliffordOp, RZOp, PauliNoiseOp, TwoQubitPauliNoiseOp, MeasureOp]
+Op = Union[CliffordOp, RZOp, PauliNoiseOp, TwoQubitPauliNoiseOp, DampOp, MeasureOp, TickOp]
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _to_qubits(q: int | tuple[int, ...]) -> tuple[int, ...]:
+    """Normalise a single qubit int or qubit tuple to a tuple."""
+    return (q,) if isinstance(q, int) else tuple(q)
 
 
 # ── Circuit class ─────────────────────────────────────────────────────────────
@@ -195,13 +264,30 @@ class Circuit:
     All circuits start from |0...0>. Clifford gates are applied exactly;
     RZ and noise ops are handled via (quasi-)probability sampling in MCEstimator.
 
+    Gates support SIMD-style multi-qubit targeting:
+
+        # Single-qubit Clifford applied to several qubits at once:
+        c.h(0, 1, 2)                     # H on qubits 0, 1, 2
+
+        # Two-qubit Clifford applied to multiple pairs at once:
+        c.cx(0, 1, 2, 3)                 # CNOT on (0→1) and (2→3)
+
+        # RZ on multiple qubits (same angle, independent sampling):
+        c.rz((0, 1, 2), np.pi / 4)
+
+        # Noise on multiple qubits (same params, independent sampling):
+        c.depolarize1((0, 1, 2), 0.01)
+
+        # Damping on multiple qubits (same T1/T2/t, independent sampling):
+        c.damp((0, 1), t=0.01, T1=100.0, T2=80.0)
+
     Build manually:
         >>> c = Circuit(n_qubits=2)
-        >>> c.h(0).cx(0, 1).rz(0, np.pi/4).depolarize1(0, 0.01)
+        >>> c.h(0, 1).cx(0, 1).rz(0, np.pi/4).depolarize1((0, 1), 0.01)
 
     Import from Stim:
-        >>> sc = stim.Circuit("H 0\\nCX 0 1\\nDEPOLARIZE1(0.01) 0 1")
-        >>> c = Circuit.from_stim(sc)
+        >>> sc = stim.Circuit("H 0 1\\nCX 0 1\\nDEPOLARIZE1(0.01) 0 1")
+        >>> c = Circuit.from_stim(sc)   # H→1 CliffordOp, DEPOL→1 PauliNoiseOp
     """
 
     def __init__(self, n_qubits: int) -> None:
@@ -210,51 +296,52 @@ class Circuit:
         self.n_qubits = n_qubits
         self._ops: list[Op] = []
 
-    # ── Clifford gate builders ─────────────────────────────────────────────────
+    # ── Clifford gate builders (SIMD: *qubits) ────────────────────────────────
 
-    def h(self, qubit: int) -> 'Circuit':
-        self._ops.append(CliffordOp('H', (qubit,)))
+    def h(self, *qubits: int) -> 'Circuit':
+        self._ops.append(CliffordOp('H', qubits))
         return self
 
-    def s(self, qubit: int) -> 'Circuit':
-        self._ops.append(CliffordOp('S', (qubit,)))
+    def s(self, *qubits: int) -> 'Circuit':
+        self._ops.append(CliffordOp('S', qubits))
         return self
 
-    def sdg(self, qubit: int) -> 'Circuit':
-        self._ops.append(CliffordOp('Sdg', (qubit,)))
+    def sdg(self, *qubits: int) -> 'Circuit':
+        self._ops.append(CliffordOp('Sdg', qubits))
         return self
 
-    def x(self, qubit: int) -> 'Circuit':
-        self._ops.append(CliffordOp('X', (qubit,)))
+    def x(self, *qubits: int) -> 'Circuit':
+        self._ops.append(CliffordOp('X', qubits))
         return self
 
-    def y(self, qubit: int) -> 'Circuit':
-        self._ops.append(CliffordOp('Y', (qubit,)))
+    def y(self, *qubits: int) -> 'Circuit':
+        self._ops.append(CliffordOp('Y', qubits))
         return self
 
-    def z(self, qubit: int) -> 'Circuit':
-        self._ops.append(CliffordOp('Z', (qubit,)))
+    def z(self, *qubits: int) -> 'Circuit':
+        self._ops.append(CliffordOp('Z', qubits))
         return self
 
-    def cx(self, control: int, target: int) -> 'Circuit':
-        self._ops.append(CliffordOp('CX', (control, target)))
+    def cx(self, *qubits: int) -> 'Circuit':
+        """CNOT on interleaved pairs: cx(c0, t0, c1, t1, …)."""
+        self._ops.append(CliffordOp('CX', qubits))
         return self
 
-    def cz(self, q0: int, q1: int) -> 'Circuit':
-        self._ops.append(CliffordOp('CZ', (q0, q1)))
+    def cz(self, *qubits: int) -> 'Circuit':
+        self._ops.append(CliffordOp('CZ', qubits))
         return self
 
-    def cy(self, q0: int, q1: int) -> 'Circuit':
-        self._ops.append(CliffordOp('CY', (q0, q1)))
+    def cy(self, *qubits: int) -> 'Circuit':
+        self._ops.append(CliffordOp('CY', qubits))
         return self
 
-    def swap(self, q0: int, q1: int) -> 'Circuit':
-        self._ops.append(CliffordOp('SWAP', (q0, q1)))
+    def swap(self, *qubits: int) -> 'Circuit':
+        self._ops.append(CliffordOp('SWAP', qubits))
         return self
 
-    def reset(self, qubit: int) -> 'Circuit':
-        """Reset qubit to |0> (Z basis)."""
-        self._ops.append(CliffordOp('R', (qubit,)))
+    def reset(self, *qubits: int) -> 'Circuit':
+        """Reset qubits to |0> (Z basis)."""
+        self._ops.append(CliffordOp('R', qubits))
         return self
 
     # ── Measurement builders ───────────────────────────────────────────────────
@@ -269,38 +356,51 @@ class Circuit:
         self._ops.append(MeasureOp(qubits=qubits, reset=True))
         return self
 
+    def tick(self) -> 'Circuit':
+        """Insert a tick (time-boundary marker). No effect on simulation."""
+        self._ops.append(TickOp())
+        return self
+
     # ── Non-Clifford gate ──────────────────────────────────────────────────────
 
-    def rz(self, qubit: int, theta: float) -> 'Circuit':
+    def rz(self, qubits: int | tuple[int, ...], theta: float) -> 'Circuit':
         """
-        Non-Clifford RZ(theta) rotation gate.
+        Non-Clifford RZ(theta) rotation gate (SIMD-capable).
+
+        Args:
+            qubits: Single qubit int, or tuple of qubit indices (same theta applied
+                    to each qubit independently; 1-norm = single^n_qubits).
+            theta:  Rotation angle in radians.
+
         Decomposed as: chi[RZ] = a*I + b*Z + c*S  (see decompositions.py).
         """
-        self._ops.append(RZOp(qubit=qubit, theta=theta))
+        self._ops.append(RZOp(qubits=_to_qubits(qubits), theta=theta))
         return self
 
     # ── Noise builders ─────────────────────────────────────────────────────────
 
-    def pauli_channel_1(self, qubit: int, px: float, py: float, pz: float) -> 'Circuit':
-        """Single-qubit Pauli noise: (1-px-py-pz)*I + px*X + py*Y + pz*Z."""
-        self._ops.append(PauliNoiseOp(qubit, px, py, pz))
+    def pauli_channel_1(
+        self, qubits: int | tuple[int, ...], px: float, py: float, pz: float
+    ) -> 'Circuit':
+        """Single-qubit Pauli noise (SIMD): (1-px-py-pz)*I + px*X + py*Y + pz*Z."""
+        self._ops.append(PauliNoiseOp(_to_qubits(qubits), px, py, pz))
         return self
 
-    def depolarize1(self, qubit: int, p: float) -> 'Circuit':
-        """Single-qubit depolarizing noise: uniform Pauli error with probability p."""
-        return self.pauli_channel_1(qubit, p / 3, p / 3, p / 3)
+    def depolarize1(self, qubits: int | tuple[int, ...], p: float) -> 'Circuit':
+        """Single-qubit depolarizing noise (SIMD): uniform Pauli error with probability p."""
+        return self.pauli_channel_1(qubits, p / 3, p / 3, p / 3)
 
-    def x_error(self, qubit: int, p: float) -> 'Circuit':
-        """Bit-flip (X) error with probability p."""
-        return self.pauli_channel_1(qubit, p, 0.0, 0.0)
+    def x_error(self, qubits: int | tuple[int, ...], p: float) -> 'Circuit':
+        """Bit-flip (X) error with probability p (SIMD)."""
+        return self.pauli_channel_1(qubits, p, 0.0, 0.0)
 
-    def y_error(self, qubit: int, p: float) -> 'Circuit':
-        """Y-error with probability p."""
-        return self.pauli_channel_1(qubit, 0.0, p, 0.0)
+    def y_error(self, qubits: int | tuple[int, ...], p: float) -> 'Circuit':
+        """Y-error with probability p (SIMD)."""
+        return self.pauli_channel_1(qubits, 0.0, p, 0.0)
 
-    def z_error(self, qubit: int, p: float) -> 'Circuit':
-        """Phase-flip (Z) error with probability p."""
-        return self.pauli_channel_1(qubit, 0.0, 0.0, p)
+    def z_error(self, qubits: int | tuple[int, ...], p: float) -> 'Circuit':
+        """Phase-flip (Z) error with probability p (SIMD)."""
+        return self.pauli_channel_1(qubits, 0.0, 0.0, p)
 
     def pauli_channel_2(self, q0: int, q1: int, probs: tuple[float, ...]) -> 'Circuit':
         """
@@ -321,12 +421,38 @@ class Circuit:
         """Two-qubit depolarizing noise: uniform Pauli error (on all 15 non-II Paulis)."""
         return self.pauli_channel_2(q0, q1, tuple([p / 15] * 15))
 
+    def damp(
+        self,
+        qubits: int | tuple[int, ...],
+        t: float,
+        T1: float,
+        T2: float,
+    ) -> 'Circuit':
+        """
+        Combined T1/T2 amplitude+phase damping channel (SIMD-capable).
+
+        Args:
+            qubits: Single qubit int, or tuple of qubit indices (same T1/T2/t
+                    applied to each qubit independently).
+            t:      Evolution time (same units as T1, T2).
+            T1:     Amplitude relaxation time.  float('inf') → no amplitude damping.
+            T2:     Total coherence time (T2*). float('inf') → no dephasing at all.
+                    Must satisfy T2 ≤ 2·T1.
+        """
+        self._ops.append(DampOp(qubits=_to_qubits(qubits), t=t, T1=T1, T2=T2))
+        return self
+
     # ── Import from Stim ───────────────────────────────────────────────────────
 
     @classmethod
     def from_stim(cls, stim_circuit: stim.Circuit, n_qubits: int | None = None) -> 'Circuit':
         """
         Build a Circuit from an existing stim.Circuit.
+
+        Multi-target Stim instructions are parsed as a single SIMD op:
+            H 0 1 2          → one CliffordOp('H', (0, 1, 2))
+            CX 0 1 2 3       → one CliffordOp('CX', (0, 1, 2, 3))
+            DEPOLARIZE1(p) 0 1 → one PauliNoiseOp((0, 1), p/3, p/3, p/3)
 
         Supported instructions:
             Clifford:     H, S, S_DAG, X, Y, Z, CX, CY, CZ, SWAP, ISWAP, R, RX, RY,
@@ -339,7 +465,7 @@ class Circuit:
             REPEAT block: unrolled into a flat gate sequence.
 
         Silently skipped (annotations, unsupported measurement bases):
-            MX, MY, MPP, MRX, MRY, TICK, QUBIT_COORDS, DETECTOR, …
+            MX, MY, MPP, MRX, MRY, QUBIT_COORDS, DETECTOR, …
 
         Unknown gates raise a warning and are skipped.
 
@@ -371,40 +497,39 @@ class Circuit:
             targets = [t for t in instr.targets_copy() if t.is_qubit_target]
             args: list[float] = instr.gate_args_copy()
 
-            # ── Single-qubit Clifford ─────────────────────────────────────────
+            # ── Single-qubit Clifford (SIMD: one op for all targets) ──────────
             if name in _STIM_1Q_CLIFFORD:
                 gate = _STIM_1Q_CLIFFORD[name]
-                for t in targets:
-                    self._ops.append(CliffordOp(gate, (t.value,)))
+                self._ops.append(CliffordOp(gate, tuple(t.value for t in targets)))
 
-            # ── Two-qubit Clifford ────────────────────────────────────────────
+            # ── Two-qubit Clifford (SIMD: one op with all interleaved pairs) ──
             elif name in _STIM_2Q_CLIFFORD:
                 gate = _STIM_2Q_CLIFFORD[name]
-                for i in range(0, len(targets), 2):
-                    self._ops.append(
-                        CliffordOp(gate, (targets[i].value, targets[i + 1].value))
-                    )
+                self._ops.append(CliffordOp(gate, tuple(t.value for t in targets)))
 
-            # ── Single-qubit noise ────────────────────────────────────────────
+            # ── Single-qubit noise (SIMD: one op for all targets) ─────────────
             elif name == 'PAULI_CHANNEL_1':
                 px, py, pz = args
-                for t in targets:
-                    self._ops.append(PauliNoiseOp(t.value, px, py, pz))
+                self._ops.append(
+                    PauliNoiseOp(tuple(t.value for t in targets), px, py, pz)
+                )
 
             elif name == 'DEPOLARIZE1':
                 p = args[0]
-                for t in targets:
-                    self._ops.append(PauliNoiseOp(t.value, p / 3, p / 3, p / 3))
+                self._ops.append(
+                    PauliNoiseOp(tuple(t.value for t in targets), p / 3, p / 3, p / 3)
+                )
 
             elif name in ('X_ERROR', 'Y_ERROR', 'Z_ERROR'):
                 p = args[0]
-                for t in targets:
-                    px = p if name == 'X_ERROR' else 0.0
-                    py = p if name == 'Y_ERROR' else 0.0
-                    pz = p if name == 'Z_ERROR' else 0.0
-                    self._ops.append(PauliNoiseOp(t.value, px, py, pz))
+                px = p if name == 'X_ERROR' else 0.0
+                py = p if name == 'Y_ERROR' else 0.0
+                pz = p if name == 'Z_ERROR' else 0.0
+                self._ops.append(
+                    PauliNoiseOp(tuple(t.value for t in targets), px, py, pz)
+                )
 
-            # ── Two-qubit noise ───────────────────────────────────────────────
+            # ── Two-qubit noise (one op per pair) ─────────────────────────────
             elif name == 'PAULI_CHANNEL_2':
                 probs = tuple(args)  # 15 values
                 for i in range(0, len(targets), 2):
@@ -432,6 +557,10 @@ class Circuit:
             elif name in ('MR', 'MRZ'):
                 qubits = tuple(t.value for t in targets)
                 self._ops.append(MeasureOp(qubits=qubits, reset=True))
+
+            # ── Tick ──────────────────────────────────────────────────────────
+            elif name == 'TICK':
+                self._ops.append(TickOp())
 
             # ── Silently skip ─────────────────────────────────────────────────
             elif name in _STIM_SKIP:
@@ -472,11 +601,51 @@ class Circuit:
     def __len__(self) -> int:
         return len(self._ops)
 
-    def __repr__(self) -> str:
-        return (
-            f"Circuit(n_qubits={self.n_qubits}, "
-            f"clifford={self.n_clifford_gates}, "
-            f"rz={self.n_rz_gates}, "
-            f"noise={self.n_noise_ops}, "
-            f"measurements={self.n_measurements})"
+    @staticmethod
+    def _op_to_str(op: 'Op') -> str:
+        """Format a single op as a Stim-like instruction string."""
+        if isinstance(op, TickOp):
+            return 'TICK'
+        if isinstance(op, CliffordOp):
+            targets = ' '.join(str(t) for t in op.targets)
+            name = 'S_DAG' if op.name == 'Sdg' else op.name
+            return f'{name} {targets}'
+        if isinstance(op, RZOp):
+            qubits_str = ' '.join(str(q) for q in op.qubits)
+            return f'RZ({op.theta:.6g}) {qubits_str}'
+        if isinstance(op, PauliNoiseOp):
+            qubits_str = ' '.join(str(q) for q in op.qubits)
+            px, py, pz = op.px, op.py, op.pz
+            if abs(px - py) < 1e-12 and abs(py - pz) < 1e-12:
+                return f'DEPOLARIZE1({px * 3:.6g}) {qubits_str}'
+            return f'PAULI_CHANNEL_1({px:.6g},{py:.6g},{pz:.6g}) {qubits_str}'
+        if isinstance(op, TwoQubitPauliNoiseOp):
+            p0 = op.probs[0]
+            if all(abs(p - p0) < 1e-12 for p in op.probs):
+                return f'DEPOLARIZE2({p0 * 15:.6g}) {op.q0} {op.q1}'
+            probs = ','.join(f'{p:.6g}' for p in op.probs)
+            return f'PAULI_CHANNEL_2({probs}) {op.q0} {op.q1}'
+        if isinstance(op, DampOp):
+            qubits_str = ' '.join(str(q) for q in op.qubits)
+            T1 = 'inf' if op.T1 == float('inf') else f'{op.T1:.6g}'
+            T2 = 'inf' if op.T2 == float('inf') else f'{op.T2:.6g}'
+            return f'DAMP(t={op.t:.6g},T1={T1},T2={T2}) {qubits_str}'
+        if isinstance(op, MeasureOp):
+            targets = ' '.join(str(q) for q in op.qubits)
+            prefix = 'MR' if op.reset else 'M'
+            return f'{prefix} {targets}'
+        return f'UNKNOWN({type(op).__name__})'
+
+    def __str__(self) -> str:
+        header = (
+            f'Circuit(n_qubits={self.n_qubits}, '
+            f'clifford={self.n_clifford_gates}, '
+            f'rz={self.n_rz_gates}, '
+            f'noise={self.n_noise_ops}, '
+            f'measurements={self.n_measurements})'
         )
+        body = '\n'.join(self._op_to_str(op) for op in self._ops)
+        return f'{header}\n{body}' if body else header
+
+    def __repr__(self) -> str:
+        return str(self)
