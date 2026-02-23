@@ -43,6 +43,7 @@ from .decompositions import (
 from .observable import PauliObservable
 from .estimator import MCEstimator, EstimationResult, estimate
 from .sampler import MCSampler, SamplerResult, sample as sample_circuit
+from .detector import DetectorSampler, DetectorSamplerResult, sample_detectors
 
 __all__ = [
     # Circuit ops
@@ -71,4 +72,8 @@ __all__ = [
     "MCSampler",
     "SamplerResult",
     "sample_circuit",
+    # Detector sampler
+    "DetectorSampler",
+    "DetectorSamplerResult",
+    "sample_detectors",
 ]

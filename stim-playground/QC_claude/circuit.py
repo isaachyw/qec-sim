@@ -14,10 +14,13 @@ Pauli noise channels, T1/T2 damping, and Z-basis measurements.
 - DampOp:              Combined T1/T2 amplitude+phase damping; 3-term stabilizer
                        decomposition. Supports SIMD (same T1/T2/t on all listed
                        qubits, each sampled independently).
-- MeasureOp:           Z-basis measurement (optionally with reset); used by MCSampler.
+- MeasureOp:           Pauli-basis measurement via measure_observable(); supports
+                       Z/X/Y basis, flip_probability for noisy readout, and reset.
+                       Each MeasureOp produces exactly one measurement record.
 
-Use Circuit.from_stim() to import an existing stim.Circuit (Clifford + noise + M/MR
-instructions). Multi-target Stim instructions are parsed as a single SIMD op.
+Use Circuit.from_stim() to import an existing stim.Circuit (Clifford + noise +
+measurement instructions). Multi-target Stim instructions are parsed as a single
+SIMD op (except measurements: one MeasureOp per qubit target).
 """
 
 from __future__ import annotations
@@ -62,9 +65,17 @@ _STIM_2Q_CLIFFORD: dict[str, str] = {
 # Instructions to silently skip during from_stim parsing
 _STIM_SKIP: frozenset[str] = frozenset({
     'QUBIT_COORDS', 'DETECTOR', 'OBSERVABLE_INCLUDE', 'SHIFT_COORDS',
-    'MX', 'MY', 'MPP', 'MRX', 'MRY',
+    'MPP',
     'HERALDED_ERASE', 'HERALDED_PAULI_CHANNEL_1', 'MPAD',
 })
+
+# Measurement instruction → (basis, reset) mapping
+_MEAS_MAP: dict[str, tuple[str, bool]] = {
+    'M': ('Z', False), 'MZ': ('Z', False),
+    'MR': ('Z', True),  'MRZ': ('Z', True),
+    'MX': ('X', False), 'MRX': ('X', True),
+    'MY': ('Y', False), 'MRY': ('Y', True),
+}
 
 
 # ── Gate op definitions ───────────────────────────────────────────────────────
@@ -226,21 +237,41 @@ class DampOp:
 @dataclass(frozen=True)
 class MeasureOp:
     """
-    Z-basis measurement on one or more qubits.
+    Pauli-basis measurement via stim.TableauSimulator.measure_observable().
 
-    Produces one bit per qubit in `qubits`, appended to the sample in circuit order.
-    If `reset=True` (i.e. MR instruction), each qubit is reset to |0> immediately
-    after measurement (used for mid-circuit stabilizer readouts in memory experiments).
+    Measures the Pauli observable defined by `basis` on all `qubits` and produces
+    exactly ONE measurement result (the joint parity for multi-qubit observables,
+    or a single-qubit result when len(qubits)==1).
+
+    For single-qubit Stim instructions (M, MX, MR, MRX, …), from_stim creates
+    one MeasureOp per qubit target so that each produces one measurement record.
+
+    If `reset=True`, qubits are reset to the +1 eigenstate of the measurement
+    basis after measurement (|0⟩ for Z, |+⟩ for X, |+i⟩ for Y).
+
+    `flip_probability` models classical readout noise: the result is flipped
+    with this probability, handled natively by measure_observable().
     """
     qubits: tuple[int, ...]
-    reset: bool = False  # True → MR: measure then reset to |0>
+    basis: str = 'Z'              # 'Z', 'X', or 'Y'
+    reset: bool = False           # True → measure then reset
+    flip_probability: float = 0.0 # classical bit-flip probability
 
-    def apply(self, sim: stim.TableauSimulator) -> list[bool]:
-        """Measure qubits and return bit results (True = 1). Optionally reset afterward."""
-        results = list(sim.measure_many(*self.qubits))
+    def apply(self, sim: stim.TableauSimulator) -> bool:
+        """Measure the Pauli observable and return a single bool. Optionally reset."""
+        max_q = max(self.qubits)
+        ps = stim.PauliString(max_q + 1)
+        for q in self.qubits:
+            ps[q] = self.basis
+        result = sim.measure_observable(ps, flip_probability=self.flip_probability)
         if self.reset:
             sim.reset(*self.qubits)
-        return results
+            if self.basis == 'X':
+                sim.h(*self.qubits)
+            elif self.basis == 'Y':
+                sim.h(*self.qubits)
+                sim.s(*self.qubits)
+        return result
 
 
 # Union type for any circuit operation
@@ -344,16 +375,42 @@ class Circuit:
         self._ops.append(CliffordOp('R', qubits))
         return self
 
-    # ── Measurement builders ───────────────────────────────────────────────────
+    # ── Measurement builders (one MeasureOp per qubit) ─────────────────────────
 
     def measure(self, *qubits: int) -> 'Circuit':
-        """Z-basis measurement on one or more qubits (M instruction)."""
-        self._ops.append(MeasureOp(qubits=qubits, reset=False))
+        """Z-basis measurement (M instruction). One MeasureOp per qubit."""
+        for q in qubits:
+            self._ops.append(MeasureOp(qubits=(q,), basis='Z'))
         return self
 
     def measure_reset(self, *qubits: int) -> 'Circuit':
         """Z-basis measurement + reset to |0> (MR instruction)."""
-        self._ops.append(MeasureOp(qubits=qubits, reset=True))
+        for q in qubits:
+            self._ops.append(MeasureOp(qubits=(q,), basis='Z', reset=True))
+        return self
+
+    def measure_x(self, *qubits: int) -> 'Circuit':
+        """X-basis measurement (MX instruction)."""
+        for q in qubits:
+            self._ops.append(MeasureOp(qubits=(q,), basis='X'))
+        return self
+
+    def measure_reset_x(self, *qubits: int) -> 'Circuit':
+        """X-basis measurement + reset to |+> (MRX instruction)."""
+        for q in qubits:
+            self._ops.append(MeasureOp(qubits=(q,), basis='X', reset=True))
+        return self
+
+    def measure_y(self, *qubits: int) -> 'Circuit':
+        """Y-basis measurement (MY instruction)."""
+        for q in qubits:
+            self._ops.append(MeasureOp(qubits=(q,), basis='Y'))
+        return self
+
+    def measure_reset_y(self, *qubits: int) -> 'Circuit':
+        """Y-basis measurement + reset to |+i> (MRY instruction)."""
+        for q in qubits:
+            self._ops.append(MeasureOp(qubits=(q,), basis='Y', reset=True))
         return self
 
     def tick(self) -> 'Circuit':
@@ -460,12 +517,14 @@ class Circuit:
             Noise:        PAULI_CHANNEL_1, PAULI_CHANNEL_2
                           DEPOLARIZE1, DEPOLARIZE2
                           X_ERROR, Y_ERROR, Z_ERROR
-            Measurement:  M, MZ  → MeasureOp(reset=False)
-                          MR, MRZ → MeasureOp(reset=True)
+            Measurement:  M, MZ, MX, MY → MeasureOp(reset=False)
+                          MR, MRZ, MRX, MRY → MeasureOp(reset=True)
+                          Each qubit target → one MeasureOp (one measurement record).
+                          Noisy variants (e.g. MR(0.005)) set flip_probability.
             REPEAT block: unrolled into a flat gate sequence.
 
-        Silently skipped (annotations, unsupported measurement bases):
-            MX, MY, MPP, MRX, MRY, QUBIT_COORDS, DETECTOR, …
+        Silently skipped (annotations, unsupported measurement types):
+            MPP, QUBIT_COORDS, DETECTOR, OBSERVABLE_INCLUDE, …
 
         Unknown gates raise a warning and are skipped.
 
@@ -549,14 +608,15 @@ class Circuit:
                         )
                     )
 
-            # ── Measurements ──────────────────────────────────────────────────
-            elif name in ('M', 'MZ'):
-                qubits = tuple(t.value for t in targets)
-                self._ops.append(MeasureOp(qubits=qubits, reset=False))
-
-            elif name in ('MR', 'MRZ'):
-                qubits = tuple(t.value for t in targets)
-                self._ops.append(MeasureOp(qubits=qubits, reset=True))
+            # ── Measurements (one MeasureOp per qubit target) ─────────────────
+            elif name in _MEAS_MAP:
+                basis, reset = _MEAS_MAP[name]
+                flip_prob = args[0] if args else 0.0
+                for t in targets:
+                    self._ops.append(MeasureOp(
+                        qubits=(t.value,), basis=basis,
+                        reset=reset, flip_probability=flip_prob,
+                    ))
 
             # ── Tick ──────────────────────────────────────────────────────────
             elif name == 'TICK':
@@ -595,8 +655,8 @@ class Circuit:
 
     @property
     def n_measurements(self) -> int:
-        """Total number of measurement bits (sum of qubits across all MeasureOps)."""
-        return sum(len(op.qubits) for op in self._ops if isinstance(op, MeasureOp))
+        """Total number of measurement records (one per MeasureOp)."""
+        return sum(1 for op in self._ops if isinstance(op, MeasureOp))
 
     def __len__(self) -> int:
         return len(self._ops)
@@ -632,8 +692,11 @@ class Circuit:
             return f'DAMP(t={op.t:.6g},T1={T1},T2={T2}) {qubits_str}'
         if isinstance(op, MeasureOp):
             targets = ' '.join(str(q) for q in op.qubits)
-            prefix = 'MR' if op.reset else 'M'
-            return f'{prefix} {targets}'
+            basis_suffix = '' if op.basis == 'Z' else op.basis
+            name = ('MR' if op.reset else 'M') + basis_suffix
+            if op.flip_probability > 0:
+                return f'{name}({op.flip_probability:.6g}) {targets}'
+            return f'{name} {targets}'
         return f'UNKNOWN({type(op).__name__})'
 
     def __str__(self) -> str:

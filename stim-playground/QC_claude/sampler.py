@@ -274,8 +274,8 @@ class MCSampler:
 
         for op, decomps in self._op_plan:
             if isinstance(op, MeasureOp):
-                results = op.apply(sim)  # list[bool]
-                bits.extend(int(b) for b in results)
+                result = op.apply(sim)  # bool
+                bits.append(int(result))
             elif isinstance(op, CliffordOp):
                 op.apply(sim)
             else:
