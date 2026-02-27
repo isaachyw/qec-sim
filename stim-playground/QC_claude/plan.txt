@@ -12,3 +12,6 @@
 
 
 6. see if the detector error model from duke is better
+
+
+chat with gpt here : https://chatgpt.com/c/6993688d-1368-8329-bed5-7f7944d9c286

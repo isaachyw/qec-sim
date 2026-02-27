@@ -546,6 +546,46 @@ class Circuit:
         self._ops.append(DampOp(qubits=_to_qubits(qubits), t=t, T1=T1, T2=T2))
         return self
 
+    # ── Idle noise insertion ────────────────────────────────────────────────────
+
+    def add_idle_exact_before_measurement(
+        self, t: float, T1: float, T2: float
+    ) -> "Circuit":
+        """
+        Insert exact T1/T2 damping (DampOp) on all qubits before each
+        measurement group.
+
+        Unlike the Pauli twirling approximation (PAULI_CHANNEL_1), this uses
+        the exact 3-term stabilizer decomposition (I, Z, Reset|0>) handled
+        by MCEstimator via quasi-probability sampling.
+
+        One DampOp is inserted before each contiguous block of MeasureOps
+        (matching the physical picture: all qubits idle during measurement).
+
+        Args:
+            t:  Idle time before measurement (same units as T1, T2).
+            T1: Amplitude relaxation time.  float('inf') for no damping.
+            T2: Total coherence time.       float('inf') for no dephasing.
+                Must satisfy T2 <= 2*T1.
+
+        Returns:
+            A new Circuit with DampOps inserted before measurement groups.
+        """
+        new_circuit = Circuit(self.n_qubits)
+        all_qubits = tuple(range(self.n_qubits))
+        prev_was_measure = False
+        for op in self._ops:
+            if isinstance(op, MeasureOp):
+                if not prev_was_measure:
+                    new_circuit._ops.append(
+                        DampOp(qubits=all_qubits, t=t, T1=T1, T2=T2)
+                    )
+                prev_was_measure = True
+            else:
+                prev_was_measure = False
+            new_circuit._ops.append(op)
+        return new_circuit
+
     # ── Import from Stim ───────────────────────────────────────────────────────
 
     @classmethod
