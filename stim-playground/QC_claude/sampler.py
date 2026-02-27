@@ -299,6 +299,9 @@ class MCSampler:
             weights is (N,) float64.
         """
         N = self._n_flat
+        stim_seeds = rng.integers(
+            0, np.iinfo(np.int64).max, size=n_samples, dtype=np.int64
+        )
 
         # ── Step 1: batch-draw term indices for all decomps × all samples ─────
         # term_indices[i, j] = which Clifford term was chosen for sample i,
@@ -325,7 +328,7 @@ class MCSampler:
         measurements = np.empty((n_samples, self._n_measurements), dtype=np.uint8)
 
         for i in range(n_samples):
-            sim = stim.TableauSimulator()
+            sim = stim.TableauSimulator(seed=int(stim_seeds[i]))
             meas_idx = 0
             flat_idx = 0
 
@@ -337,9 +340,7 @@ class MCSampler:
                     op.apply(sim)
                 else:
                     for decomp in decomps:  # type: ignore[union-attr]
-                        gate = self._flat_gates[flat_idx][
-                            term_indices[i, flat_idx]
-                        ]
+                        gate = self._flat_gates[flat_idx][term_indices[i, flat_idx]]
                         _apply_gate_term(sim, gate, self._flat_qubits[flat_idx])
                         flat_idx += 1
 
