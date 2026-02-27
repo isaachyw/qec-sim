@@ -89,21 +89,16 @@ class SamplerResult:
 
 def _proc_worker(
     sampler: "MCSampler", child_seed: np.random.SeedSequence, n: int
-) -> tuple[list, list]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Worker function for ProcessPoolExecutor.
 
     Must be defined at module level so multiprocessing can pickle it by name.
     child_seed is a spawned SeedSequence (unique per worker via spawn_key).
+    Uses batch sampling for efficiency.
     """
     rng = np.random.default_rng(child_seed)
-    bits_list: list[list[int]] = []
-    weights_list: list[float] = []
-    for _ in range(n):
-        b, w = sampler._single_sample(rng)
-        bits_list.append(b)
-        weights_list.append(w.real)
-    return bits_list, weights_list
+    return sampler._batch_sample(n, rng)
 
 
 # ── MCSampler ─────────────────────────────────────────────────────────────────
@@ -185,6 +180,38 @@ class MCSampler:
             else:
                 raise TypeError(f"Unknown op type: {type(op)}")
 
+        # ── Pre-compute flat decomposition arrays for batch sampling ──────
+        # Flatten all GateDecompositions into parallel arrays so that we can
+        # draw ALL random numbers in one rng.random() call and vectorize the
+        # weight computation across samples.
+        #
+        # _flat_qubits[j]:  target qubit tuple for decomposition j
+        # _flat_gates[j]:   list of gate labels (one per term)
+        # _flat_cdfs[j]:    CDF array for importance sampling
+        # _flat_coeffs[j]:  complex coefficient array (for weight = coeff/prob)
+        # _flat_probs[j]:   sampling probability array
+        self._flat_qubits: list[tuple[int, ...]] = []
+        self._flat_gates: list[list[str]] = []
+        self._flat_cdfs: list[np.ndarray] = []
+        self._flat_coeffs: list[np.ndarray] = []
+        self._flat_probs: list[np.ndarray] = []
+
+        for _, decomps in self._op_plan:
+            if decomps is not None:
+                for decomp in decomps:
+                    abs_c = np.array([abs(t.coefficient) for t in decomp.terms])
+                    norm = abs_c.sum()
+                    probs = abs_c / norm
+                    self._flat_qubits.append(decomp.qubits)
+                    self._flat_gates.append([t.gate for t in decomp.terms])
+                    self._flat_cdfs.append(np.cumsum(probs))
+                    self._flat_coeffs.append(
+                        np.array([t.coefficient for t in decomp.terms])
+                    )
+                    self._flat_probs.append(probs)
+
+        self._n_flat = len(self._flat_qubits)
+
     @property
     def one_norm(self) -> float:
         """Product of 1-norms for all decompositions (noise ops contribute 1.0)."""
@@ -212,16 +239,6 @@ class MCSampler:
                         -1 → one process per logical CPU (os.cpu_count()).
                         N → N processes.
 
-        Parallelism notes:
-            Each sample is fully independent so the loop is embarrassingly
-            parallel. Uses ProcessPoolExecutor (separate processes) rather
-            than threads because Stim's pybind11 bindings hold the GIL for
-            individual gate calls, making threads ineffective. Each worker
-            process receives an independent RNG stream derived from `seed`
-            via numpy SeedSequence, preserving reproducibility.
-            The sampler object is pickled once per worker at startup; with
-            Linux fork-based multiprocessing the cost is negligible.
-
         Returns:
             SamplerResult with measurements (N×M) and weights (N,).
         """
@@ -233,64 +250,100 @@ class MCSampler:
         if n_workers is None or n_workers <= 1:
             # ── Serial path ───────────────────────────────────────────────────
             rng = np.random.default_rng(seed)
-            all_bits: list[list[int]] = []
-            all_weights: list[float] = []
-            for _ in range(n_samples):
-                bits, weight = self._single_sample(rng)
-                all_bits.append(bits)
-                all_weights.append(weight.real)
+            measurements, weights = self._batch_sample(n_samples, rng)
         else:
             # ── Parallel path (ProcessPoolExecutor) ───────────────────────────
-            # Distribute samples as evenly as possible across workers.
             base, rem = divmod(n_samples, n_workers)
             chunk_sizes = [base + (1 if i < rem else 0) for i in range(n_workers)]
-
-            # Each worker gets an independent, reproducible RNG child stream.
-            # SeedSequence objects are picklable and carry unique spawn_key state.
             child_seeds = np.random.SeedSequence(seed).spawn(n_workers)
 
-            all_bits = []
-            all_weights = []
+            chunks_m: list[np.ndarray] = []
+            chunks_w: list[np.ndarray] = []
             with ProcessPoolExecutor(max_workers=n_workers) as pool:
                 futures = [
                     pool.submit(_proc_worker, self, s, n)
                     for s, n in zip(child_seeds, chunk_sizes)
                 ]
                 for f in futures:
-                    b, w = f.result()
-                    all_bits.extend(b)
-                    all_weights.extend(w)
+                    m, w = f.result()
+                    chunks_m.append(m)
+                    chunks_w.append(w)
+            measurements = np.concatenate(chunks_m, axis=0)
+            weights = np.concatenate(chunks_w, axis=0)
 
         return SamplerResult(
-            measurements=np.array(all_bits, dtype=np.uint8),
-            weights=np.array(all_weights, dtype=np.float64),
+            measurements=measurements,
+            weights=weights,
             n_samples=n_samples,
             n_measurements=self._n_measurements,
             one_norm=self.one_norm,
         )
 
-    def _single_sample(self, rng: np.random.Generator) -> tuple[list[int], complex]:
-        """Run one trajectory; return (bit_list, complex_weight)."""
-        sim = stim.TableauSimulator()
-        # stim circuit num qubits is bigger than the real, might cause tableau track extra qubits
-        # sim.set_num_qubits(self._circuit.n_qubits)
-        weight: complex = 1.0 + 0j
-        bits: list[int] = []
+    # ── Batch sampling core ──────────────────────────────────────────────────
 
-        for op, decomps in self._op_plan:
-            if isinstance(op, MeasureOp):
-                result = op.apply(sim)  # bool
-                bits.append(int(result))
-            elif isinstance(op, CliffordOp):
-                op.apply(sim)
-            else:
-                # Each qubit in a SIMD op is sampled independently.
-                for decomp in decomps:  # type: ignore[union-attr]
-                    coeff, prob, gate = decomp.sample(rng)
-                    _apply_gate_term(sim, gate, decomp.qubits)
-                    weight *= coeff / prob
+    def _batch_sample(
+        self, n_samples: int, rng: np.random.Generator
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Draw n_samples trajectories using batch-vectorized noise sampling.
 
-        return bits, weight
+        Instead of calling GateDecomposition.sample(rng) per-decomp per-sample
+        (slow: ~22 us Python overhead each), we:
+          1. Draw ALL random numbers in one rng.random() call.
+          2. Convert to term indices via searchsorted on pre-computed CDFs.
+          3. Vectorize the weight computation across all samples.
+          4. Per-sample loop only does cheap gate lookups + Stim C++ calls.
+
+        Returns:
+            (measurements, weights) — measurements is (N, M) uint8,
+            weights is (N,) float64.
+        """
+        N = self._n_flat
+
+        # ── Step 1: batch-draw term indices for all decomps × all samples ─────
+        # term_indices[i, j] = which Clifford term was chosen for sample i,
+        #                      flat decomposition j.
+        if N > 0:
+            term_indices = np.empty((n_samples, N), dtype=np.int8)
+            for j in range(N):
+                u = rng.random(n_samples)
+                term_indices[:, j] = np.searchsorted(self._flat_cdfs[j], u)
+
+            # ── Step 2: vectorized weight computation ─────────────────────────
+            # weight[i] = prod_j ( coeff[j][idx] / prob[j][idx] )
+            weights = np.ones(n_samples, dtype=np.complex128)
+            for j in range(N):
+                idx_j = term_indices[:, j]
+                weights *= self._flat_coeffs[j][idx_j] / self._flat_probs[j][idx_j]
+            weights_real = weights.real
+        else:
+            term_indices = np.empty((n_samples, 0), dtype=np.int8)
+            weights_real = np.ones(n_samples, dtype=np.float64)
+
+        # ── Step 3: per-sample simulation (gate application + measurement) ────
+        # The only per-sample work is Stim C++ calls — no RNG, no Python math.
+        measurements = np.empty((n_samples, self._n_measurements), dtype=np.uint8)
+
+        for i in range(n_samples):
+            sim = stim.TableauSimulator()
+            meas_idx = 0
+            flat_idx = 0
+
+            for op, decomps in self._op_plan:
+                if isinstance(op, MeasureOp):
+                    measurements[i, meas_idx] = int(op.apply(sim))
+                    meas_idx += 1
+                elif isinstance(op, CliffordOp):
+                    op.apply(sim)
+                else:
+                    for decomp in decomps:  # type: ignore[union-attr]
+                        gate = self._flat_gates[flat_idx][
+                            term_indices[i, flat_idx]
+                        ]
+                        _apply_gate_term(sim, gate, self._flat_qubits[flat_idx])
+                        flat_idx += 1
+
+        return measurements, weights_real
 
 
 # ── Functional interface ───────────────────────────────────────────────────────
