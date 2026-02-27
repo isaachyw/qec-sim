@@ -83,3 +83,6 @@ data/
 delta/
 
 scratch.py
+
+slurm/
+slurm.sh
