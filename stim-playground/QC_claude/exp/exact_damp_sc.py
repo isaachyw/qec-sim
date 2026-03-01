@@ -85,13 +85,11 @@ def evaluate_point(
     matcher = pymatching.Matching.from_detector_error_model(dem)
 
     # 3. Parse detector/observable definitions from the stim circuit
-    detector_records, observable_records, total_meas = (
-        _parse_detectors_and_observables(noisy_stim)
+    detector_records, observable_records, total_meas = _parse_detectors_and_observables(
+        noisy_stim
     )
     n_observables = max(observable_records.keys()) + 1 if observable_records else 0
-    obs_record_lists = [
-        observable_records.get(i, []) for i in range(n_observables)
-    ]
+    obs_record_lists = [observable_records.get(i, []) for i in range(n_observables)]
 
     # 4. Convert to QC_claude Circuit and add exact DampOp
     qc_circuit = Circuit.from_stim(noisy_stim)

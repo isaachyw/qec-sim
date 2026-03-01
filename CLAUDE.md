@@ -15,3 +15,9 @@ I use uv to manage the environment. The venv under stim-playground/.venv/bin/pyt
 when developing the code, whenever you encounter some big uncertain, ask me first.
 
 you don't need to worry about the robustness or the compatibility of the code for different platforms for now, the code is for scratch and research not for industrial use.
+
+# Project Rules
+
+## Testing
+- When asked to run tests, ALWAYS use the command: `pytest -n auto`
+- Do not run standard `pytest` without the `-n auto` flag.

@@ -43,7 +43,31 @@ from .decompositions import (
     pauli_noise_decomp_2q,
     damp_decomposition,
 )
-from .estimator import _apply_gate_term
+
+
+# ── Stim instruction string helpers ──────────────────────────────────────────
+
+# Map our canonical Clifford names → stim instruction names
+_CLIFFORD_TO_STIM: dict[str, str] = {"Sdg": "S_DAG"}
+
+
+def _gate_term_to_stim_str(gate: str, qubits: tuple[int, ...]) -> str:
+    """Convert a decomposition gate term (e.g. 'X', 'RESET', 'XZ') to a stim instruction string."""
+    if len(qubits) == 1:
+        q = qubits[0]
+        if gate == "I":
+            return ""
+        elif gate == "RESET":
+            return f"R {q}"
+        else:  # X, Y, Z, S
+            return f"{gate} {q}"
+    else:
+        # 2Q Pauli term: e.g. "XZ" on (q0, q1) → "X q0\nZ q1"
+        parts = []
+        for pauli, q in zip(gate, qubits):
+            if pauli != "I":
+                parts.append(f"{pauli} {q}")
+        return "\n".join(parts)
 
 
 # ── Result dataclass ───────────────────────────────────────────────────────────
@@ -212,6 +236,39 @@ class MCSampler:
 
         self._n_flat = len(self._flat_qubits)
 
+        # ── Pre-build stim instruction strings for Circuit-per-sample ─────
+        # _circuit_template is a flat list matching the op_plan order.
+        # Fixed ops (Clifford/Measure) → str instruction line.
+        # Noise/RZ decomps → list[str] (one instruction line per term).
+        # In the per-sample loop we select the right term string, join all
+        # lines, parse one stim.Circuit, and call sim.do_circuit() once —
+        # collapsing ~N individual pybind11 crossings into ~3.
+        self._circuit_template: list[str | list[str]] = []
+        for op, decomps in self._op_plan:
+            if isinstance(op, CliffordOp):
+                if op.name == "I":
+                    continue
+                name = _CLIFFORD_TO_STIM.get(op.name, op.name)
+                targets = " ".join(str(t) for t in op.targets)
+                self._circuit_template.append(f"{name} {targets}")
+            elif isinstance(op, MeasureOp):
+                basis_suffix = "" if op.basis == "Z" else op.basis
+                mn = ("MR" if op.reset else "M") + basis_suffix
+                targets = " ".join(str(q) for q in op.qubits)
+                if op.flip_probability > 0:
+                    self._circuit_template.append(
+                        f"{mn}({op.flip_probability}) {targets}"
+                    )
+                else:
+                    self._circuit_template.append(f"{mn} {targets}")
+            elif decomps is not None:
+                for decomp in decomps:
+                    term_strs = [
+                        _gate_term_to_stim_str(term.gate, decomp.qubits)
+                        for term in decomp.terms
+                    ]
+                    self._circuit_template.append(term_strs)
+
     @property
     def one_norm(self) -> float:
         """Product of 1-norms for all decompositions (noise ops contribute 1.0)."""
@@ -323,26 +380,30 @@ class MCSampler:
             term_indices = np.empty((n_samples, 0), dtype=np.int8)
             weights_real = np.ones(n_samples, dtype=np.float64)
 
-        # ── Step 3: per-sample simulation (gate application + measurement) ────
-        # The only per-sample work is Stim C++ calls — no RNG, no Python math.
+        # ── Step 3: per-sample simulation via stim.Circuit batching ──────────
+        # Instead of ~N individual sim.h()/sim.x()/… pybind11 calls per sample,
+        # we build one stim.Circuit string per sample and call sim.do_circuit()
+        # once — collapsing ~N crossings into ~3 (Circuit parse + do_circuit +
+        # current_measurement_record).
         measurements = np.empty((n_samples, self._n_measurements), dtype=np.uint8)
+        template = self._circuit_template
 
         for i in range(n_samples):
             sim = stim.TableauSimulator(seed=int(stim_seeds[i]))
-            meas_idx = 0
+            lines: list[str] = []
             flat_idx = 0
 
-            for op, decomps in self._op_plan:
-                if isinstance(op, MeasureOp):
-                    measurements[i, meas_idx] = int(op.apply(sim))
-                    meas_idx += 1
-                elif isinstance(op, CliffordOp):
-                    op.apply(sim)
+            for entry in template:
+                if isinstance(entry, list):
+                    line = entry[term_indices[i, flat_idx]]
+                    if line:
+                        lines.append(line)
+                    flat_idx += 1
                 else:
-                    for decomp in decomps:  # type: ignore[union-attr]
-                        gate = self._flat_gates[flat_idx][term_indices[i, flat_idx]]
-                        _apply_gate_term(sim, gate, self._flat_qubits[flat_idx])
-                        flat_idx += 1
+                    lines.append(entry)
+
+            sim.do_circuit(stim.Circuit("\n".join(lines)))
+            measurements[i, :] = sim.current_measurement_record()
 
         return measurements, weights_real
 
